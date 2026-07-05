@@ -50,11 +50,30 @@ class TemplateEngine {
     required double temperature,
     String? systemPrompt,
   }) {
+    final lastUserMessage = conversationHistory.isNotEmpty
+        ? (conversationHistory.last['content']?.toString() ?? '')
+        : '';
+    // Gemini "contents" formatı: role 'assistant' yerine 'model' bekler.
+    final geminiContents = conversationHistory
+        .map((m) => {
+              'role': m['role'] == 'assistant' ? 'model' : 'user',
+              'parts': [
+                {'text': m['content']?.toString() ?? ''},
+              ],
+            })
+        .toList();
     return {
       'API_KEY': apiKey ?? '',
       'MODEL_NAME': modelName,
+      'MODEL': modelName,
       'CONVERSATION_HISTORY': conversationHistory,
+      'MESSAGES': conversationHistory,
+      'GEMINI_CONTENTS': geminiContents,
+      // Bazı presetler (ör. Gemini) tek bir düz metin bekler; son kullanıcı
+      // mesajını string olarak da sunuyoruz.
+      'LAST_MESSAGE': lastUserMessage,
       'TEMPERATURE': temperature,
+      'MAX_TOKENS': 4096,
       'SYSTEM_PROMPT': systemPrompt ?? '',
     };
   }

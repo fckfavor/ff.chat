@@ -27,10 +27,42 @@ class DynamicHttpClient {
 
   Uri _buildUri(Preset preset, Map<String, String> filledQueryParams) {
     final uri = Uri.parse(preset.baseUrlTemplate);
+    _assertSafeScheme(uri);
     if (filledQueryParams.isEmpty) return uri;
     final mergedParams = Map<String, String>.from(uri.queryParameters)
       ..addAll(filledQueryParams);
     return uri.replace(queryParameters: mergedParams);
+  }
+
+  /// http:// (TLS'siz) istekleri sadece localhost/yerel ağ (LAN) hedeflerine
+  /// izin verir. Böylece kullanıcı yanlışlıkla http:// bir uzak Base URL
+  /// girerse Authorization header'ındaki API anahtarı açık ağ üzerinden
+  /// gönderilmez.
+  void _assertSafeScheme(Uri uri) {
+    if (uri.scheme != 'http') return;
+    if (_isLocalOrPrivateHost(uri.host)) return;
+    throw ApiException(
+      statusCode: 0,
+      parsedMessage:
+          'Güvenli olmayan (http://) bağlantılara yalnızca localhost/yerel '
+          'ağ (LAN) adresleri için izin verilir. Lütfen https:// kullanın '
+          'ya da geçerli bir LAN adresi girin.',
+    );
+  }
+
+  bool _isLocalOrPrivateHost(String host) {
+    if (host == 'localhost' || host == '127.0.0.1' || host == '::1') {
+      return true;
+    }
+    final parts = host.split('.');
+    if (parts.length != 4) return false;
+    final octets = parts.map(int.tryParse).toList();
+    if (octets.any((o) => o == null || o < 0 || o > 255)) return false;
+    final a = octets[0]!, b = octets[1]!;
+    if (a == 10) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    return false;
   }
 
   Map<String, dynamic> _buildFilledBody({
@@ -222,6 +254,7 @@ class DynamicHttpClient {
         .replaceAll('{{BASE_URL}}', baseUrl)
         .replaceAll('{{API_KEY}}', apiKey);
     final uri = Uri.parse(urlString);
+    _assertSafeScheme(uri);
 
     final headers = TemplateEngine.fillStringMap(
       template: preset.headers,

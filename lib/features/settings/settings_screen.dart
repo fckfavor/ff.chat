@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/http/dynamic_http_client.dart';
+import '../../core/http/friendly_error.dart';
 import '../../core/models/preset.dart';
 import '../../core/presets/builtin_presets.dart';
 import '../../core/storage/app_settings_repository.dart';
@@ -110,29 +111,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  String _friendlyErrorMessage(Object error) {
-    if (error is ApiException) {
-      switch (error.statusCode) {
-        case 401:
-        case 403:
-          return 'API anahtarı geçersiz.';
-        case 429:
-          return 'Kota/rate limit aşıldı.';
-        default:
-          if (error.statusCode >= 500) {
-            return 'Sunucu hatası (${error.statusCode}). Daha sonra tekrar deneyin.';
-          }
-          return 'Bağlantı hatası (${error.statusCode}): ${error.parsedMessage}';
-      }
-    }
-    return 'Bağlantı başarısız: $error';
-  }
-
   Future<void> _testConnection() async {
     final preset = _selectedPreset;
     if (preset == null) return;
     if (preset.modelsListEndpointTemplate == null ||
         preset.modelsListEndpointTemplate!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Bu preset otomatik model keşfi desteklemiyor; model adını '
+            'manuel olarak girin.',
+          ),
+        ),
+      );
       return;
     }
 
@@ -176,7 +167,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: Colors.red,
-          content: Text(_friendlyErrorMessage(e)),
+          content: Text(friendlyErrorMessage(e)),
         ),
       );
     }
@@ -363,6 +354,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               onChanged: _saveModelName,
             ),
+          if (_discoveredModels.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                'Model listesi otomatik doldurulamadı. "Bağlantıyı Test Et" '
+                'ile deneyin ya da model adını elle girin.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
           const SizedBox(height: 24),
 
           const Text('API Key', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -402,7 +402,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                ElevatedButton(onPressed: _saveApiKey, child: const Text('Kaydet')),
+                ElevatedButton(
+                  onPressed: _saveApiKey,
+                  child: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text('Kaydet'),
+                  ),
+                ),
               ],
             ),
           const SizedBox(height: 24),

@@ -96,12 +96,24 @@ class JsonPathResolver {
         segments.add(_PathSegment(key: key));
       }
 
-      final matches = RegExp(r'\[(\d+)\]').allMatches(part.substring(bracketIndex));
+      final bracketPart = part.substring(bracketIndex);
+      final matches =
+          RegExp(r'\[(\d+)\]').allMatches(bracketPart).toList();
+      // "[]" (boş index) veya "[abc]" (sayısal olmayan) gibi geçersiz bir
+      // bracket grubu varsa, segment'i sessizce atlamak yerine hemen
+      // fark edilebilir bir hata fırlat. Aksi halde path fiilen kırpılır ve
+      // resolve() hiçbir hata vermeden yanlışlıkla null döner.
+      final validBracketGroups =
+          RegExp(r'\[\d+\]').allMatches(bracketPart).length;
+      final totalBracketGroups = RegExp(r'\[[^\]]*\]').allMatches(bracketPart).length;
+      if (validBracketGroups != totalBracketGroups) {
+        throw FormatException(
+          'Geçersiz JSON path bracket ifadesi: "$part" (path: "$path")',
+        );
+      }
       for (final match in matches) {
-        final index = int.tryParse(match.group(1)!);
-        if (index != null) {
-          segments.add(_PathSegment(index: index));
-        }
+        final index = int.parse(match.group(1)!);
+        segments.add(_PathSegment(index: index));
       }
     }
 

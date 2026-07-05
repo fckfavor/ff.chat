@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/http/dynamic_http_client.dart';
+import '../../core/http/friendly_error.dart';
 import '../../core/models/preset.dart';
 import '../../core/storage/app_settings_repository.dart';
 import '../../core/storage/chat_repository.dart';
@@ -33,7 +34,13 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+    final existingSessionId = _settingsRepo.getCurrentSessionId();
+    if (existingSessionId != null) {
+      _sessionId = existingSessionId;
+    } else {
+      _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+      _settingsRepo.setCurrentSessionId(_sessionId);
+    }
     _messages.addAll(_chatRepository.getMessagesForSession(_sessionId));
   }
 
@@ -68,8 +75,18 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final modelName = _settingsRepo.getModelName() ?? '';
+    if (modelName.trim().isEmpty) {
+      _showError('Lütfen önce Ayarlar ekranından bir model adı girin.');
+      return;
+    }
     final temperature = _settingsRepo.getTemperature();
     final apiKey = await _secureStorage.getApiKey(preset.id);
+    final needsApiKey = preset.headers.values.any((v) => v.contains('{{API_KEY}}')) ||
+        preset.urlQueryParams.values.any((v) => v.contains('{{API_KEY}}'));
+    if (needsApiKey && (apiKey == null || apiKey.trim().isEmpty)) {
+      _showError('Lütfen önce Ayarlar ekranından API anahtarınızı girin.');
+      return;
+    }
 
     final userMessage = ChatMessage(
       id: '${DateTime.now().microsecondsSinceEpoch}_user',
@@ -113,20 +130,23 @@ class _ChatScreenState extends State<ChatScreen> {
           temperature: temperature,
         )) {
           buffer.write(chunk);
+          if (!mounted) return;
           setState(() => _streamingText = buffer.toString());
           _scrollToBottom();
         }
         await _appendAssistantMessage(preset.id, buffer.toString());
       }
     } on ApiException catch (e) {
-      _showError(_friendlyErrorMessage(e));
+      _showError(friendlyErrorMessage(e));
     } catch (e) {
-      _showError('Beklenmeyen bir hata oluştu: $e');
+      _showError('Beklenmeyen bir hata oluştu. Lütfen bağlantınızı ve ayarlarınızı kontrol edin.');
     } finally {
-      setState(() {
-        _sending = false;
-        _streamingText = '';
-      });
+      if (mounted) {
+        setState(() {
+          _sending = false;
+          _streamingText = '';
+        });
+      }
     }
   }
 
@@ -140,23 +160,13 @@ class _ChatScreenState extends State<ChatScreen> {
       presetId: presetId,
       sessionId: _sessionId,
     );
-    setState(() => _messages.add(assistantMessage));
+    if (mounted) {
+      setState(() => _messages.add(assistantMessage));
+    } else {
+      _messages.add(assistantMessage);
+    }
     await _chatRepository.addMessage(assistantMessage);
     _scrollToBottom();
-  }
-
-  String _friendlyErrorMessage(ApiException e) {
-    switch (e.statusCode) {
-      case 401:
-        return 'API anahtarı geçersiz veya eksik. Lütfen Ayarlar\'ı kontrol edin.';
-      case 429:
-        return 'İstek limiti aşıldı. Lütfen bir süre sonra tekrar deneyin.';
-      default:
-        if (e.statusCode >= 500) {
-          return 'Sunucu tarafında bir sorun oluştu. Lütfen daha sonra tekrar deneyin.';
-        }
-        return 'İstek başarısız oldu (${e.statusCode}): ${e.parsedMessage}';
-    }
   }
 
   void _showError(String message) {

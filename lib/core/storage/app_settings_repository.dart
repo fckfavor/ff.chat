@@ -8,6 +8,7 @@ class AppSettingsRepository {
   static const _modelNameKey = 'model_name';
   static const _presetIdKey = 'preset_id';
   static const _temperatureKey = 'temperature';
+  static const _currentSessionIdKey = 'current_session_id';
 
   String? getBaseUrl() => LocalDatabase.settingsBox.get(_baseUrlKey) as String?;
 
@@ -31,4 +32,12 @@ class AppSettingsRepository {
 
   Future<void> setTemperature(double value) =>
       LocalDatabase.settingsBox.put(_temperatureKey, value);
+
+  /// Aktif sohbet oturumunun kimliği. Uygulama yeniden açıldığında aynı
+  /// oturumun mesajlarının geri yüklenebilmesi için kalıcı olarak saklanır.
+  String? getCurrentSessionId() =>
+      LocalDatabase.settingsBox.get(_currentSessionIdKey) as String?;
+
+  Future<void> setCurrentSessionId(String value) =>
+      LocalDatabase.settingsBox.put(_currentSessionIdKey, value);
 }

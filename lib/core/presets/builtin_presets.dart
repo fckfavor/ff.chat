@@ -80,14 +80,7 @@ class BuiltinPresets {
       'key': '{{API_KEY}}',
     },
     body: const {
-      'contents': [
-        {
-          'role': 'user',
-          'parts': [
-            {'text': '{{MESSAGES}}'},
-          ],
-        },
-      ],
+      'contents': '{{GEMINI_CONTENTS}}',
       'generationConfig': {
         'temperature': '{{TEMPERATURE}}',
       },
