@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Yerel ağdaki AI sunucularına (Ollama, LM Studio vb.) http (cleartext)
+  bağlantı kurabilmek için. Bu sunucular genellikle TLS sertifikası
+  olmadan LAN üzerinden yayın yapar.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

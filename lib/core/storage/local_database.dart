@@ -127,6 +127,7 @@ class LocalDatabase {
   static const String messagesBoxName = 'chat_messages';
   static const String sessionsBoxName = 'chat_sessions';
   static const String presetsBoxName = 'presets';
+  static const String settingsBoxName = 'app_settings';
 
   static bool _initialized = false;
 
@@ -144,6 +145,7 @@ class LocalDatabase {
     await Hive.openBox<ChatMessage>(messagesBoxName);
     await Hive.openBox<ChatSession>(sessionsBoxName);
     await Hive.openBox<Map>(presetsBoxName);
+    await Hive.openBox(settingsBoxName);
 
     _initialized = true;
   }
@@ -155,4 +157,6 @@ class LocalDatabase {
       Hive.box<ChatSession>(sessionsBoxName);
 
   static Box<Map> get presetsBox => Hive.box<Map>(presetsBoxName);
+
+  static Box get settingsBox => Hive.box(settingsBoxName);
 }
