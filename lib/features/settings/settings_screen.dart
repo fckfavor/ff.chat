@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/http/dynamic_http_client.dart';
@@ -70,6 +72,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _selectedPresetId = isSavedPresetValid
         ? savedPresetId
         : (_presets.isNotEmpty ? _presets.first.id : null);
+
+    // Kayıtlı preset id'si yoksa (ilk açılış) veya artık geçersizse, burada
+    // düşülen varsayılanı HEMEN kalıcı hale getir. Aksi halde kullanıcı
+    // dropdown'a hiç dokunmadan (zaten bir preset seçili göründüğü için)
+    // doğrudan Sohbet ekranına geçerse, ChatScreen._settingsRepo.getPresetId()
+    // null döner ve "Lütfen önce Ayarlar ekranından bir preset seçin." hatası
+    // görünür - halbuki kullanıcı ekranda bir preset seçili görmüştür.
+    if (_selectedPresetId != null && !isSavedPresetValid) {
+      // Not: Bilerek `await` edilmiyor. Hive `put` çağrısı kutunun
+      // bellek-içi haritasını senkron olarak günceller ve yalnızca diskteki
+      // flush işlemini asenkron yapar; bu yüzden `getPresetId()` bu satırdan
+      // hemen sonra (await beklemeden) doğru değeri okuyabilir. initState
+      // sırasında bunu `await` etmek, disk I/O tamamlanana kadar `_loading`
+      // durumunu true'da tutup gereksiz yere ekranı bloke eder.
+      unawaited(_settingsRepo.setPresetId(_selectedPresetId!));
+    }
 
     _baseUrlController.text = _settingsRepo.getBaseUrl() ?? '';
     _modelNameController.text = _settingsRepo.getModelName() ?? '';
@@ -275,10 +293,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   initialValue: _presets.any((p) => p.id == _selectedPresetId)
                       ? _selectedPresetId
                       : null,
+                  isExpanded: true,
                   decoration: const InputDecoration(border: OutlineInputBorder()),
                   items: _presets
                       .map(
-                        (p) => DropdownMenuItem(value: p.id, child: Text(p.name)),
+                        (p) => DropdownMenuItem(
+                          value: p.id,
+                          child: Text(
+                            p.name,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       )
                       .toList(),
                   onChanged: _onPresetChanged,
