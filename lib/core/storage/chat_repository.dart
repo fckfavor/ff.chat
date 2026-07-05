@@ -1,4 +1,5 @@
 import '../models/preset.dart';
+import '../presets/builtin_presets.dart';
 import 'local_database.dart';
 
 /// Hive tabanlı yerel veritabanı üzerinde çalışan basit repository katmanı.
@@ -62,6 +63,20 @@ class ChatRepository {
     final json = LocalDatabase.presetsBox.get(id);
     if (json == null) return null;
     return Preset.fromJson(Map<String, dynamic>.from(json));
+  }
+
+  /// Hem kullanıcı tanımlı (kayıtlı) presetleri hem de uygulamayla birlikte
+  /// gelen built-in presetleri (BuiltinPresets.all) arar. ChatScreen gibi
+  /// ekranlar, Ayarlar'da seçilen bir built-in preset id'sini bu metodla
+  /// çözmelidir; sadece [getPreset] kullanmak built-in presetleri hiç
+  /// bulamaz (o metod yalnızca presetsBox'ta kayıtlı özel presetlere bakar).
+  Preset? resolvePreset(String id) {
+    final custom = getPreset(id);
+    if (custom != null) return custom;
+    for (final p in BuiltinPresets.all) {
+      if (p.id == id) return p;
+    }
+    return null;
   }
 
   List<Preset> getAllPresets() {

@@ -68,7 +68,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty || _sending) return;
 
     final presetId = _settingsRepo.getPresetId();
-    final preset = presetId != null ? _chatRepository.getPreset(presetId) : null;
+    final preset = presetId != null ? _chatRepository.resolvePreset(presetId) : null;
     if (preset == null) {
       _showError('Lütfen önce Ayarlar ekranından bir preset seçin.');
       return;
