@@ -1,7 +1,5 @@
 import 'package:hive_flutter/hive_flutter.dart';
 
-import '../models/preset.dart';
-
 /// Yerel veritabanında saklanan tek bir sohbet mesajı.
 class ChatMessage extends HiveObject {
   ChatMessage({
@@ -119,7 +117,7 @@ class ChatSessionAdapter extends TypeAdapter<ChatSession> {
 /// Hive kutularının (box) açılması ve yönetimi.
 ///
 /// Preset'ler HiveObject olmadığı, düz Dart sınıfı olduğu için
-/// doğrudan Map<String, dynamic> (Preset.toJson) olarak saklanır;
+/// doğrudan `Map<String, dynamic>` (Preset.toJson) olarak saklanır;
 /// bu sayede Preset sınıfı için ayrı bir TypeAdapter yazmaya gerek kalmaz.
 class LocalDatabase {
   LocalDatabase._();
