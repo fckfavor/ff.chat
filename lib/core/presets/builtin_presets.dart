@@ -29,6 +29,8 @@ class BuiltinPresets {
     errorJsonPath: 'error.message',
     streamStrategy: StreamStrategy.sseOpenAi,
     requiredFields: const ['model', 'messages'],
+    modelsListEndpointTemplate: '{{BASE_URL}}/v1/models',
+    modelsListJsonPath: 'data[].id',
   );
 
   /// Anthropic (Claude) preset.
@@ -53,6 +55,14 @@ class BuiltinPresets {
     errorJsonPath: 'error.message',
     streamStrategy: StreamStrategy.sseAnthropic,
     requiredFields: const ['model', 'messages', 'max_tokens'],
+    // Anthropic'in güvenilir bir public model-listesi endpoint'i olmadığı
+    // için otomatik keşif yerine statik olarak bilinen model id'leri.
+    knownModels: const [
+      'claude-opus-4-20250514',
+      'claude-sonnet-4-20250514',
+      'claude-3-7-sonnet-20250219',
+      'claude-3-5-haiku-20241022',
+    ],
   );
 
   /// Google Gemini preset. API anahtarı header yerine URL query param olarak
@@ -86,6 +96,10 @@ class BuiltinPresets {
     errorJsonPath: 'error.message',
     streamStrategy: StreamStrategy.none,
     requiredFields: const ['contents'],
+    // Gemini modelleri "models/gemini-..." formatında döner; UI tarafında
+    // "models/" prefix'i temizlenmelidir.
+    modelsListEndpointTemplate: '{{BASE_URL}}/v1beta/models?key={{API_KEY}}',
+    modelsListJsonPath: 'models[].name',
   );
 
   /// Ollama'nın kendi native /api/chat uç noktası. Yerel sunucu olduğu için
@@ -111,6 +125,8 @@ class BuiltinPresets {
     errorJsonPath: 'error',
     streamStrategy: StreamStrategy.ndjson,
     requiredFields: const ['model', 'messages'],
+    modelsListEndpointTemplate: '{{BASE_URL}}/api/tags',
+    modelsListJsonPath: 'models[].name',
   );
 
   /// Ayarlar ekranındaki preset seçim listesinde gösterilecek hazır presetler.

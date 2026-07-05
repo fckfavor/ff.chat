@@ -207,6 +207,40 @@ class DynamicHttpClient {
     }
   }
 
+  /// [preset.modelsListEndpointTemplate] doluysa Base URL + API Key ile model
+  /// listesini keşfeder. Endpoint tanımlı değilse boş liste döner (çağıran
+  /// taraf manuel model adı girişine düşmeli).
+  Future<List<String>> fetchModelList({
+    required Preset preset,
+    required String apiKey,
+    required String baseUrl,
+  }) async {
+    final template = preset.modelsListEndpointTemplate;
+    if (template == null || template.isEmpty) return [];
+
+    final urlString = template
+        .replaceAll('{{BASE_URL}}', baseUrl)
+        .replaceAll('{{API_KEY}}', apiKey);
+    final uri = Uri.parse(urlString);
+
+    final headers = TemplateEngine.fillStringMap(
+      template: preset.headers,
+      apiKey: apiKey,
+      modelName: '',
+    );
+
+    final response = await _client.get(uri, headers: headers);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      _throwApiException(preset, response.statusCode, response.body);
+    }
+
+    final decoded = jsonDecode(response.body);
+    final path = preset.modelsListJsonPath;
+    if (path == null || path.isEmpty) return [];
+    return JsonPathResolver.resolveList(decoded, path);
+  }
+
   void close() {
     _client.close();
   }

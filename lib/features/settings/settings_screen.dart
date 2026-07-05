@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 
+import '../../core/http/dynamic_http_client.dart';
 import '../../core/models/preset.dart';
 import '../../core/presets/builtin_presets.dart';
 import '../../core/storage/app_settings_repository.dart';
 import '../../core/storage/chat_repository.dart';
 import '../../core/storage/secure_key_storage.dart';
+
+/// Model seçim dropdown'ında "manuel gir" seçeneğini temsil eder.
+const String _manualModelOption = '__manual__';
 
 /// Ayarlar ekranı: API key, base URL, preset seçimi, model adı ve sıcaklık.
 class SettingsScreen extends StatefulWidget {
@@ -18,6 +22,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _secureStorage = SecureKeyStorage();
   final _settingsRepo = AppSettingsRepository();
   final _chatRepository = ChatRepository();
+  final _httpClient = DynamicHttpClient();
 
   final _baseUrlController = TextEditingController();
   final _modelNameController = TextEditingController();
@@ -29,6 +34,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _hasSavedApiKey = false;
   bool _apiKeyVisible = false;
   bool _loading = true;
+  bool _testingConnection = false;
+
+  // Bağlantı testinden (ya da knownModels'dan) gelen model listesi.
+  List<String> _discoveredModels = [];
+  // Kullanıcı dropdown'da "Diğer/Manuel gir" seçtiyse manuel metin alanı
+  // gösterilir.
+  bool _manualModelEntry = true;
 
   // Ayarlar tek bir "aktif" preset üzerinden tutuluyor; henüz preset
   // kaydedilmemişse bu id ile geçici olarak yönetilir.
@@ -47,16 +59,127 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ...BuiltinPresets.all.where((p) => !customIds.contains(p.id)),
       ...customPresets,
     ];
-    _selectedPresetId = _settingsRepo.getPresetId() ??
-        (_presets.isNotEmpty ? _presets.first.id : _defaultPresetId);
+
+    // Kayıtlı presetId artık _presets listesinde yoksa (silinmiş/uyumsuz id)
+    // DropdownButtonFormField'ın "value listede yok" assert/hata ile
+    // donmasını önlemek için ilk geçerli presete düş.
+    final savedPresetId = _settingsRepo.getPresetId();
+    final isSavedPresetValid =
+        savedPresetId != null && _presets.any((p) => p.id == savedPresetId);
+    _selectedPresetId = isSavedPresetValid
+        ? savedPresetId
+        : (_presets.isNotEmpty ? _presets.first.id : null);
+
     _baseUrlController.text = _settingsRepo.getBaseUrl() ?? '';
     _modelNameController.text = _settingsRepo.getModelName() ?? '';
     _temperature = _settingsRepo.getTemperature();
 
-    final savedKey = await _secureStorage.getApiKey(_selectedPresetId!);
-    _hasSavedApiKey = savedKey != null && savedKey.isNotEmpty;
+    if (_selectedPresetId != null) {
+      final savedKey = await _secureStorage.getApiKey(_selectedPresetId!);
+      _hasSavedApiKey = savedKey != null && savedKey.isNotEmpty;
+    }
+
+    _syncKnownModelsForSelectedPreset();
 
     setState(() => _loading = false);
+  }
+
+  Preset? get _selectedPreset {
+    if (_selectedPresetId == null) return null;
+    for (final p in _presets) {
+      if (p.id == _selectedPresetId) return p;
+    }
+    return null;
+  }
+
+  /// Seçili preset otomatik keşif desteklemiyorsa ama statik knownModels
+  /// listesi varsa (örn Anthropic), onu dropdown'a doldurur.
+  void _syncKnownModelsForSelectedPreset() {
+    final preset = _selectedPreset;
+    if (preset != null &&
+        (preset.modelsListEndpointTemplate == null ||
+            preset.modelsListEndpointTemplate!.isEmpty) &&
+        preset.knownModels != null &&
+        preset.knownModels!.isNotEmpty) {
+      _discoveredModels = preset.knownModels!;
+      _manualModelEntry = !_discoveredModels.contains(_modelNameController.text) &&
+          _modelNameController.text.isNotEmpty;
+    } else {
+      _discoveredModels = [];
+      _manualModelEntry = true;
+    }
+  }
+
+  String _friendlyErrorMessage(Object error) {
+    if (error is ApiException) {
+      switch (error.statusCode) {
+        case 401:
+        case 403:
+          return 'API anahtarı geçersiz.';
+        case 429:
+          return 'Kota/rate limit aşıldı.';
+        default:
+          if (error.statusCode >= 500) {
+            return 'Sunucu hatası (${error.statusCode}). Daha sonra tekrar deneyin.';
+          }
+          return 'Bağlantı hatası (${error.statusCode}): ${error.parsedMessage}';
+      }
+    }
+    return 'Bağlantı başarısız: $error';
+  }
+
+  Future<void> _testConnection() async {
+    final preset = _selectedPreset;
+    if (preset == null) return;
+    if (preset.modelsListEndpointTemplate == null ||
+        preset.modelsListEndpointTemplate!.isEmpty) {
+      return;
+    }
+
+    final baseUrl = _baseUrlController.text.trim();
+    if (baseUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Önce Base URL girin.')),
+      );
+      return;
+    }
+
+    final apiKey = _apiKeyController.text.trim().isNotEmpty
+        ? _apiKeyController.text.trim()
+        : await _secureStorage.getApiKey(preset.id) ?? '';
+
+    setState(() => _testingConnection = true);
+    try {
+      final rawModels = await _httpClient.fetchModelList(
+        preset: preset,
+        apiKey: apiKey,
+        baseUrl: baseUrl,
+      );
+      // Gemini gibi bazı sağlayıcılar "models/gemini-..." formatında döner.
+      final models =
+          rawModels.map((m) => m.replaceFirst('models/', '')).toList();
+      if (!mounted) return;
+      setState(() {
+        _discoveredModels = models;
+        _manualModelEntry = models.isEmpty;
+        _testingConnection = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.green,
+          content: Text('Bağlantı başarılı, ${models.length} model bulundu.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _testingConnection = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.red,
+          content: Text(_friendlyErrorMessage(e)),
+        ),
+      );
+    }
   }
 
   Future<void> _saveApiKey() async {
@@ -100,10 +223,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _onPresetChanged(String? presetId) async {
     if (presetId == null) return;
-    setState(() => _selectedPresetId = presetId);
+    setState(() {
+      _selectedPresetId = presetId;
+      _syncKnownModelsForSelectedPreset();
+    });
     await _settingsRepo.setPresetId(presetId);
     final savedKey = await _secureStorage.getApiKey(presetId);
     setState(() => _hasSavedApiKey = savedKey != null && savedKey.isNotEmpty);
+  }
+
+  void _onModelDropdownChanged(String? value) {
+    if (value == null) return;
+    if (value == _manualModelOption) {
+      setState(() => _manualModelEntry = true);
+      return;
+    }
+    setState(() {
+      _manualModelEntry = false;
+      _modelNameController.text = value;
+    });
+    _saveModelName(value);
   }
 
   @override
@@ -111,6 +250,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _baseUrlController.dispose();
     _modelNameController.dispose();
     _apiKeyController.dispose();
+    _httpClient.close();
     super.dispose();
   }
 
@@ -137,7 +277,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: TextStyle(color: Colors.grey),
                 )
               : DropdownButtonFormField<String>(
-                  initialValue: _selectedPresetId,
+                  // Not: `_selectedPresetId`'nin her zaman `_presets` içinde
+                  // geçerli bir id olduğu `_loadSettings`/`_onPresetChanged`
+                  // tarafından garanti edilir; aksi halde bu widget "value
+                  // listede yok" hatasıyla donar.
+                  initialValue: _presets.any((p) => p.id == _selectedPresetId)
+                      ? _selectedPresetId
+                      : null,
                   decoration: const InputDecoration(border: OutlineInputBorder()),
                   items: _presets
                       .map(
@@ -165,18 +311,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'olmalısınız.',
             style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
+          const SizedBox(height: 12),
+          if (_selectedPreset?.modelsListEndpointTemplate != null)
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _testingConnection ? null : _testConnection,
+                icon: _testingConnection
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.wifi_tethering),
+                label: Text(
+                  _testingConnection ? 'Test ediliyor...' : 'Bağlantıyı Test Et',
+                ),
+              ),
+            ),
           const SizedBox(height: 24),
 
           const Text('Model Adı', style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          TextField(
-            controller: _modelNameController,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: 'gpt-4o-mini / deepseek-chat / llama3',
+          if (_discoveredModels.isNotEmpty) ...[
+            DropdownButtonFormField<String>(
+              initialValue: _manualModelEntry
+                  ? _manualModelOption
+                  : (_discoveredModels.contains(_modelNameController.text)
+                      ? _modelNameController.text
+                      : _manualModelOption),
+              decoration: const InputDecoration(border: OutlineInputBorder()),
+              items: [
+                ..._discoveredModels.map(
+                  (m) => DropdownMenuItem(value: m, child: Text(m)),
+                ),
+                const DropdownMenuItem(
+                  value: _manualModelOption,
+                  child: Text('Diğer / Manuel gir'),
+                ),
+              ],
+              onChanged: _onModelDropdownChanged,
             ),
-            onChanged: _saveModelName,
-          ),
+            const SizedBox(height: 8),
+          ],
+          if (_manualModelEntry || _discoveredModels.isEmpty)
+            TextField(
+              controller: _modelNameController,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'gpt-4o-mini / deepseek-chat / llama3',
+              ),
+              onChanged: _saveModelName,
+            ),
           const SizedBox(height: 24),
 
           const Text('API Key', style: TextStyle(fontWeight: FontWeight.bold)),

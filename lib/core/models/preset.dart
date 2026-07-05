@@ -40,6 +40,19 @@ class Preset {
   final StreamStrategy streamStrategy;
   final List<String> requiredFields;
 
+  /// Model listesini otomatik keşfetmek için kullanılacak endpoint şablonu
+  /// (örn "{{BASE_URL}}/v1/models"). Sağlayıcının güvenilir bir public model
+  /// listesi endpoint'i yoksa (örn Anthropic) null bırakılır.
+  final String? modelsListEndpointTemplate;
+
+  /// [modelsListEndpointTemplate]'den dönen JSON gövdesindeki model
+  /// isimlerini çıkarmak için kullanılan path (örn "data[].id").
+  final String? modelsListJsonPath;
+
+  /// Otomatik keşif mümkün olmayan sağlayıcılar için statik olarak bilinen
+  /// model id'leri (örn Anthropic).
+  final List<String>? knownModels;
+
   Preset({
     required this.id,
     required this.name,
@@ -52,6 +65,9 @@ class Preset {
     this.errorJsonPath,
     this.streamStrategy = StreamStrategy.none,
     this.requiredFields = const [],
+    this.modelsListEndpointTemplate,
+    this.modelsListJsonPath,
+    this.knownModels,
   });
 
   Map<String, dynamic> toJson() {
@@ -67,6 +83,9 @@ class Preset {
       'errorJsonPath': errorJsonPath,
       'streamStrategy': streamStrategyToString(streamStrategy),
       'requiredFields': requiredFields,
+      'modelsListEndpointTemplate': modelsListEndpointTemplate,
+      'modelsListJsonPath': modelsListJsonPath,
+      'knownModels': knownModels,
     };
   }
 
@@ -86,6 +105,11 @@ class Preset {
           streamStrategyFromString(json['streamStrategy'] as String? ?? 'none'),
       requiredFields:
           List<String>.from(json['requiredFields'] as List? ?? const []),
+      modelsListEndpointTemplate: json['modelsListEndpointTemplate'] as String?,
+      modelsListJsonPath: json['modelsListJsonPath'] as String?,
+      knownModels: json['knownModels'] == null
+          ? null
+          : List<String>.from(json['knownModels'] as List),
     );
   }
 }

@@ -32,6 +32,52 @@ class JsonPathResolver {
     return current;
   }
 
+  /// "data[].id" gibi bir path'te "[]" ile işaretlenen noktada listeyi gezer,
+  /// her elemana kalan path'i uygular ve sonuçları [List<String>] olarak
+  /// toplar. Parse edilemeyen/null elemanlar atlanır.
+  static List<String> resolveList(dynamic data, String path) {
+    final results = <String>[];
+    if (path.isEmpty) return results;
+
+    final splitIndex = path.indexOf('[]');
+    if (splitIndex == -1) {
+      // "[]" yoksa doğrudan resolve edip tek elemanlı ya da liste sonucu
+      // string listesine çevir.
+      final resolved = resolve(data, path);
+      if (resolved is List) {
+        for (final item in resolved) {
+          if (item != null) results.add(item.toString());
+        }
+      } else if (resolved != null) {
+        results.add(resolved.toString());
+      }
+      return results;
+    }
+
+    final beforePath = path.substring(0, splitIndex);
+    var afterPath = path.substring(splitIndex + 2);
+    if (afterPath.startsWith('.')) {
+      afterPath = afterPath.substring(1);
+    }
+
+    final listValue = beforePath.isEmpty ? data : resolve(data, beforePath);
+    if (listValue is! List) return results;
+
+    for (final element in listValue) {
+      dynamic value;
+      if (afterPath.isEmpty) {
+        value = element;
+      } else {
+        value = resolve(element, afterPath);
+      }
+      if (value != null) {
+        results.add(value.toString());
+      }
+    }
+
+    return results;
+  }
+
   static List<_PathSegment> _parsePath(String path) {
     final segments = <_PathSegment>[];
     final parts = path.split('.');
