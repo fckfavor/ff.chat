@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/models/preset.dart';
+import '../../core/presets/builtin_presets.dart';
 import '../../core/storage/app_settings_repository.dart';
 import '../../core/storage/chat_repository.dart';
 import '../../core/storage/secure_key_storage.dart';
@@ -40,7 +41,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettings() async {
-    _presets = _chatRepository.getAllPresets();
+    final customPresets = _chatRepository.getAllPresets();
+    final customIds = customPresets.map((p) => p.id).toSet();
+    _presets = [
+      ...BuiltinPresets.all.where((p) => !customIds.contains(p.id)),
+      ...customPresets,
+    ];
     _selectedPresetId = _settingsRepo.getPresetId() ??
         (_presets.isNotEmpty ? _presets.first.id : _defaultPresetId);
     _baseUrlController.text = _settingsRepo.getBaseUrl() ?? '';
