@@ -53,6 +53,13 @@ class Preset {
   /// model id'leri (örn Anthropic).
   final List<String>? knownModels;
 
+  /// Stream (chunk) yanıtlarından içerik çıkarmak için kullanılan JSONPath.
+  /// Birçok sağlayıcıda (OpenAI: "delta" vs "message", Anthropic: "delta"
+  /// vs "content[]") stream chunk şeması, tam/non-stream yanıt şemasından
+  /// FARKLIDIR. null ise [responseJsonPath] ile aynı kabul edilir (örn
+  /// Ollama/Gemini gibi ikisi de aynı şemayı kullanan sağlayıcılar için).
+  final String? streamResponseJsonPath;
+
   Preset({
     required this.id,
     required this.name,
@@ -68,6 +75,7 @@ class Preset {
     this.modelsListEndpointTemplate,
     this.modelsListJsonPath,
     this.knownModels,
+    this.streamResponseJsonPath,
   });
 
   Map<String, dynamic> toJson() {
@@ -86,6 +94,7 @@ class Preset {
       'modelsListEndpointTemplate': modelsListEndpointTemplate,
       'modelsListJsonPath': modelsListJsonPath,
       'knownModels': knownModels,
+      'streamResponseJsonPath': streamResponseJsonPath,
     };
   }
 
@@ -110,6 +119,7 @@ class Preset {
       knownModels: json['knownModels'] == null
           ? null
           : List<String>.from(json['knownModels'] as List),
+      streamResponseJsonPath: json['streamResponseJsonPath'] as String?,
     );
   }
 }

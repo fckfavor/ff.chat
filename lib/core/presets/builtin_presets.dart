@@ -24,8 +24,14 @@ class BuiltinPresets {
       'model': '{{MODEL}}',
       'messages': '{{MESSAGES}}',
       'temperature': '{{TEMPERATURE}}',
+      // stream:true olmadan sunucu SSE değil düz JSON döner; streamStrategy
+      // sseOpenAi olduğu için bu alan olmadan yanıt sessizce boş kalırdı.
+      'stream': true,
     },
     responseJsonPath: 'choices[0].message.content',
+    // OpenAI stream chunk'ları "message" değil "delta" alanı kullanır
+    // (örn {"choices":[{"delta":{"content":"..."}}]}).
+    streamResponseJsonPath: 'choices[0].delta.content',
     errorJsonPath: 'error.message',
     streamStrategy: StreamStrategy.sseOpenAi,
     requiredFields: const ['model', 'messages'],
@@ -50,8 +56,13 @@ class BuiltinPresets {
       'system': '{{SYSTEM_PROMPT}}',
       'max_tokens': '{{MAX_TOKENS}}',
       'temperature': '{{TEMPERATURE}}',
+      // stream:true olmadan Anthropic SSE değil düz JSON döner.
+      'stream': true,
     },
     responseJsonPath: 'content[0].text',
+    // Anthropic content_block_delta olayları {"delta":{"text":"..."}}
+    // şeklinde gelir; tam yanıttaki "content[0].text" ile aynı değildir.
+    streamResponseJsonPath: 'delta.text',
     errorJsonPath: 'error.message',
     streamStrategy: StreamStrategy.sseAnthropic,
     requiredFields: const ['model', 'messages', 'max_tokens'],

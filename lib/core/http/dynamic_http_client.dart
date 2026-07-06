@@ -25,8 +25,22 @@ class DynamicHttpClient {
 
   DynamicHttpClient({http.Client? client}) : _client = client ?? http.Client();
 
-  Uri _buildUri(Preset preset, Map<String, String> filledQueryParams) {
-    final uri = Uri.parse(preset.baseUrlTemplate);
+  /// İstek atılacak URI'yi oluşturur. Kullanıcı Ayarlar'da kendi Base URL'ini
+  /// girdiyse (BYOK'un temel amacı - kendi/özel/proxy endpoint'i kullanmak)
+  /// o kullanılır; boşsa preset'in varsayılan (resmi sağlayıcı) adresine
+  /// düşülür. {{MODEL}} yer tutucusu (Gemini gibi model adının URL path'inde
+  /// geçtiği durumlar için) her iki durumda da doldurulur.
+  Uri _buildUri(
+    Preset preset,
+    Map<String, String> filledQueryParams, {
+    String? baseUrl,
+    required String modelName,
+  }) {
+    final effectiveTemplate = (baseUrl != null && baseUrl.trim().isNotEmpty)
+        ? baseUrl.trim()
+        : preset.baseUrlTemplate;
+    final filledUrl = effectiveTemplate.replaceAll('{{MODEL}}', modelName);
+    final uri = Uri.parse(filledUrl);
     _assertSafeScheme(uri);
     if (filledQueryParams.isEmpty) return uri;
     final mergedParams = Map<String, String>.from(uri.queryParameters)
@@ -125,6 +139,7 @@ class DynamicHttpClient {
     required List<Map<String, dynamic>> conversationHistory,
     required double temperature,
     String? systemPrompt,
+    String? baseUrl,
   }) async {
     final uri = _buildUri(
       preset,
@@ -134,6 +149,8 @@ class DynamicHttpClient {
         modelName: modelName,
         systemPrompt: systemPrompt,
       ),
+      baseUrl: baseUrl,
+      modelName: modelName,
     );
     final headers = _buildFilledHeaders(
       preset: preset,
@@ -174,6 +191,7 @@ class DynamicHttpClient {
     required List<Map<String, dynamic>> conversationHistory,
     required double temperature,
     String? systemPrompt,
+    String? baseUrl,
   }) async* {
     final strategy = StreamStrategyFactory.create(preset.streamStrategy);
     if (strategy == null) {
@@ -186,6 +204,7 @@ class DynamicHttpClient {
         conversationHistory: conversationHistory,
         temperature: temperature,
         systemPrompt: systemPrompt,
+        baseUrl: baseUrl,
       );
       yield result;
       return;
@@ -199,6 +218,8 @@ class DynamicHttpClient {
         modelName: modelName,
         systemPrompt: systemPrompt,
       ),
+      baseUrl: baseUrl,
+      modelName: modelName,
     );
     final headers = _buildFilledHeaders(
       preset: preset,
@@ -226,10 +247,11 @@ class DynamicHttpClient {
       _throwApiException(preset, streamedResponse.statusCode, rawBody);
     }
 
+    final chunkJsonPath = preset.streamResponseJsonPath ?? preset.responseJsonPath;
     await for (final chunk in strategy.parseChunks(streamedResponse.stream)) {
       try {
         final decoded = jsonDecode(chunk);
-        final resolved = JsonPathResolver.resolve(decoded, preset.responseJsonPath);
+        final resolved = JsonPathResolver.resolve(decoded, chunkJsonPath);
         if (resolved != null) {
           yield resolved.toString();
         }

@@ -110,6 +110,8 @@ class _ChatScreenState extends State<ChatScreen> {
         .map((m) => {'role': m.role, 'content': m.content})
         .toList();
 
+    final baseUrl = _settingsRepo.getBaseUrl();
+
     try {
       if (preset.streamStrategy == StreamStrategy.none) {
         final result = await _httpClient.sendSingle(
@@ -118,6 +120,7 @@ class _ChatScreenState extends State<ChatScreen> {
           modelName: modelName,
           conversationHistory: history,
           temperature: temperature,
+          baseUrl: baseUrl,
         );
         await _appendAssistantMessage(preset.id, result);
       } else {
@@ -128,6 +131,7 @@ class _ChatScreenState extends State<ChatScreen> {
           modelName: modelName,
           conversationHistory: history,
           temperature: temperature,
+          baseUrl: baseUrl,
         )) {
           buffer.write(chunk);
           if (!mounted) return;
