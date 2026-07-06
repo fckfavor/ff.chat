@@ -8,7 +8,7 @@ import 'features/chat/chat_screen.dart';
 import 'features/settings/settings_screen.dart';
 
 /// Uygulamanın mevcut sürümü (pubspec.yaml ile senkron tutulmalı).
-const String _appVersion = '1.0.0';
+const String _appVersion = '1.0.1';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
