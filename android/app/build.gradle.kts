@@ -20,7 +20,9 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 24
-        targetSdk = flutter.targetSdkVersion
+        // targetSdk bilerek 28: Android 10+ app-data icinden exec'i engeller.
+        // proot/busybox sandbox icin sart (Termux'un ayni yolu). Sideload dagitimi.
+        targetSdk = 28
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
@@ -31,6 +33,13 @@ android {
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+
+    // Sideload dagitimi: targetSdk 28 bilincli (proot exec izni icin),
+    // Play Store lint kontrolu kapali — bu APK Play'e gitmiyor.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 }
 

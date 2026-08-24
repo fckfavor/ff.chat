@@ -7,6 +7,7 @@ import '../../core/hooks/hook_service.dart';
 import '../../core/models/http_tool_plugin.dart';
 import '../../core/storage/plugin_repository.dart';
 import '../../core/http/dynamic_http_client.dart';
+import '../../core/workspace/sandbox_installer.dart';
 import '../../core/workspace/sandbox_service.dart';
 import '../../core/http/friendly_error.dart';
 import '../../core/models/preset.dart';
@@ -45,6 +46,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _testingConnection = false;
   PermissionMode _permissionMode = PermissionMode.planAsk;
   List<HttpToolPlugin> _plugins = [];
+  bool _sandboxInstalling = false;
+  double _sandboxProgress = 0;
+  String _sandboxLabel = '';
 
   // Bağlantı testinden (ya da knownModels'dan) gelen model listesi.
   List<String> _discoveredModels = [];
@@ -237,6 +241,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveTemperature(double value) async {
     setState(() => _temperature = value);
     await _settingsRepo.setTemperature(value);
+  }
+
+  Future<void> _installSandbox() async {
+    setState(() {
+      _sandboxInstalling = true;
+      _sandboxProgress = 0;
+      _sandboxLabel = 'basliyor...';
+    });
+    try {
+      await SandboxInstaller.instance.install(onProgress: (p, label) {
+        if (!mounted) return;
+        setState(() {
+          _sandboxProgress = p;
+          _sandboxLabel = label;
+        });
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(backgroundColor: Colors.green, content: Text('Sandbox kuruldu — izole mod aktif')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.red, content: Text('Kurulum hatasi: $e')));
+    } finally {
+      if (mounted) setState(() => _sandboxInstalling = false);
+    }
   }
 
   Future<void> _addPluginDialog() async {
@@ -557,22 +585,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
           const Text('Sandbox Durumu', style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          FutureBuilder<Map<String, dynamic>>(
+                    FutureBuilder<Map<String, dynamic>>(
+            key: ValueKey(_sandboxInstalling ? 'installing' : 'idle'),
             future: SandboxService.instance.checkStatus(),
             builder: (context, snapshot) {
               final data = snapshot.data;
               final isolated = data?['isolated'] == true;
-              final text = data == null ? 'Kontrol ediliyor...' : isolated ? 'Izole (proot + rootfs aktif)' : 'Fallback mod — V2 icin proot bundle gerekli';
+              final text = data == null ? 'Kontrol ediliyor...' : isolated ? 'IZOLE MOD — proot + Alpine rootfs aktif' : 'Fallback mod (workspace guard) — tam izolasyon icin kur';
               final color = isolated ? Colors.green : Colors.orange;
               return Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withValues(alpha: 0.3))),
-                child: Row(children: [Icon(isolated ? Icons.verified_user : Icons.shield_outlined, size: 16, color: color), const SizedBox(width: 6), Expanded(child: Text(text, style: TextStyle(fontSize: 11, color: color)))]),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [Icon(isolated ? Icons.verified_user : Icons.shield_outlined, size: 16, color: color), const SizedBox(width: 6), Expanded(child: Text(text, style: TextStyle(fontSize: 11, color: color)))]),
+                    if (!isolated && !_sandboxInstalling) ...[
+                      const SizedBox(height: 8),
+                      FilledButton.icon(
+                        onPressed: _installSandbox,
+                        icon: const Icon(Icons.download, size: 16),
+                        label: const Text('SANDBOX KUR (proot + Alpine ~5MB)'),
+                      ),
+                    ],
+                    if (_sandboxInstalling) ...[
+                      const SizedBox(height: 8),
+                      LinearProgressIndicator(value: _sandboxProgress > 0 ? _sandboxProgress : null),
+                      const SizedBox(height: 4),
+                      Text(_sandboxLabel, style: const TextStyle(fontSize: 10, color: Colors.blueGrey)),
+                    ],
+                  ],
+                ),
               );
             },
           ),
-          const SizedBox(height: 6),
-          const Text('Proot + Alpine rootfs V2\'de aktif olacak, su an Workspace guard + blocklist ile calisiyor.', style: TextStyle(fontSize: 11, color: Colors.grey)),
           const SizedBox(height: 24),
           const Divider(),
           const SizedBox(height: 12),

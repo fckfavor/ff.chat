@@ -49,12 +49,13 @@ class SandboxService {
           break;
         }
       }
-      // Rootfs kontrol
+      // Rootfs kontrol — Alpine imzasi (etc/alpine-release) veya bin/sh
       final rootfs = await SandboxConfig.getRootfsPath();
       _rootfsPath = rootfs;
+      final alpineMarker = File(p.join(rootfs, 'etc', 'alpine-release'));
       final rootfsBin = File(p.join(rootfs, 'bin', 'sh'));
       final rootfsEtc = Directory(p.join(rootfs, 'etc'));
-      if (await rootfsBin.exists() || await rootfsEtc.exists()) {
+      if (await alpineMarker.exists() || await rootfsBin.exists() || await rootfsEtc.exists()) {
         _rootfsAvailable = true;
       }
     } catch (_) {
@@ -85,7 +86,7 @@ class SandboxService {
       // Fallback: normal shell, workdir zaten SandboxConfig ile guard'li
       return {'executable': null, 'args': null, 'useProot': false};
     }
-    // Proot ile: proot -r rootfs -b workspace:/workspace -w /workspace sh -c "command"
+    // Proot ile: proot -r rootfs -b workspace:/workspace -w /workspace /bin/sh -c "command"
     final workspaceRoot = await SandboxConfig.getWorkspaceRoot();
     final proot = _prootPath!;
     final rootfs = _rootfsPath!;
@@ -104,7 +105,7 @@ class SandboxService {
         '$workspaceRoot:/workspace',
         '-w',
         prootWorkdir,
-        'sh',
+        '/bin/sh',
         '-c',
         command,
       ],

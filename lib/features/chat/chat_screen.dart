@@ -1,17 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
 import '../../core/agent/agent_loop.dart';
 import '../../core/agent/context_compaction.dart';
 import '../../core/agent/permission_gate.dart';
 import '../../core/agent/tool_definitions.dart';
-import '../../core/http/dynamic_http_client.dart';
-import '../../core/presets/builtin_presets.dart';
-import '../../core/workspace/workspace_fs.dart';
-import '../settings/settings_screen.dart';
 import '../../core/http/dynamic_http_client.dart';
 import '../../core/http/friendly_error.dart';
 import '../../core/models/preset.dart';
@@ -19,8 +15,12 @@ import '../../core/storage/app_settings_repository.dart';
 import '../../core/storage/chat_repository.dart';
 import '../../core/storage/local_database.dart';
 import '../../core/storage/secure_key_storage.dart';
+import '../../core/workspace/workspace_fs.dart';
+import '../settings/settings_screen.dart';
+import 'widgets/tool_activity_card.dart';
 
-/// Minimalist sohbet ekrani: mesaj listesi + alt input + Agent mode + Permission Gate.
+/// Agent workbench — Claude Code mobil: canli tool kartlari, alt onay bar,
+/// slash komutlari. Sadece sohbet degil, calisan bir ajan goruntusu.
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
 
@@ -43,11 +43,17 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _sending = false;
   String _streamingText = '';
   bool _agentMode = true;
-  bool _planMode = false; // Gercek Plan Modu: once plan yaz, onaydan sonra uygula
+  bool _planMode = false;
   bool _planApproved = false;
   List<Map<String, dynamic>> _todos = [];
   List<String> _quickModels = [];
   bool _quickModelsLoading = false;
+
+  // Canli tool kartlari (bu turde uretilenler)
+  final List<ToolActivity> _activities = [];
+  // Bekleyen izin istegleri (alt barda gosterilir)
+  _PendingApproval? _pendingApproval;
+  String _statusLine = '';
 
   @override
   void initState() {
@@ -60,18 +66,15 @@ class _ChatScreenState extends State<ChatScreen> {
       _settingsRepo.setCurrentSessionId(_sessionId);
     }
     _messages.addAll(_chatRepository.getMessagesForSession(_sessionId));
-    // Todolari yukle
     final storedTodos = _chatRepository.getTodosForSession(_sessionId);
     if (storedTodos.isNotEmpty) {
       _todos = storedTodos.map((t) => {'content': t.content, 'status': t.status, 'priority': t.priority}).toList();
     }
-    // Hizli model listesini yukle
     _loadQuickModels();
   }
 
   void _onTodosUpdated(List<Map<String, dynamic>> todos) {
     setState(() => _todos = List<Map<String, dynamic>>.from(todos));
-    // Hive'a persist et
     _chatRepository.saveTodos(_sessionId, todos);
   }
 
@@ -79,13 +82,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final presetId = _settingsRepo.getPresetId();
     final preset = presetId != null ? _chatRepository.resolvePreset(presetId) : null;
     if (preset == null) return;
-    // Known models varsa onlari kullan (Anthropic gibi)
     if (preset.knownModels != null && preset.knownModels!.isNotEmpty) {
       if (mounted) setState(() => _quickModels = preset.knownModels!);
       return;
     }
-    // Yoksa gecici olarak bossa birak, Settings'te Test ile dolacak
-    // Dinamik fetch denemesi (sadece http destekleyen preset'lerde)
     if (preset.modelsListEndpointTemplate == null || preset.modelsListEndpointTemplate!.isEmpty) return;
     final baseUrl = _settingsRepo.getBaseUrl();
     if (baseUrl == null || baseUrl.isEmpty) return;
@@ -96,7 +96,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final cleaned = models.map((m) => m.replaceFirst('models/', '')).toList();
       if (mounted) setState(() => _quickModels = cleaned);
     } catch (_) {
-      // sessizce yut, Settings'te denenecek
     } finally {
       if (mounted) setState(() => _quickModelsLoading = false);
     }
@@ -124,7 +123,6 @@ class _ChatScreenState extends State<ChatScreen> {
                     await _settingsRepo.setModelName(m);
                     if (mounted) Navigator.pop(context);
                     if (mounted) setState(() {});
-                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Model: $m')));
                   },
                 )),
             ListTile(
@@ -194,272 +192,90 @@ class _ChatScreenState extends State<ChatScreen> {
   String _toolPreview(String toolName, Map<String, dynamic> args) {
     switch (toolName) {
       case 'shell_exec':
-        return 'Komut: ${args['command'] ?? ''}\nWorkdir: ${args['workdir'] ?? '.'}';
+        return '\$ ${args['command'] ?? ''}';
       case 'file_write':
         final content = args['content']?.toString() ?? '';
-        final preview = content.length > 300 ? '${content.substring(0, 300)}...' : content;
-        return 'Yol: ${args['path'] ?? ''}\nIcerik:\n$preview';
+        final preview = content.length > 400 ? '${content.substring(0, 400)}...' : content;
+        return '${args['path'] ?? ''}\n$preview';
       case 'file_edit':
         final oldStr = args['old_string']?.toString() ?? '';
         final newStr = args['new_string']?.toString() ?? '';
-        final oldPrev = oldStr.length > 150 ? '${oldStr.substring(0, 150)}...' : oldStr;
-        final newPrev = newStr.length > 150 ? '${newStr.substring(0, 150)}...' : newStr;
-        return 'Yol: ${args['path'] ?? ''}\n- $oldPrev\n+ $newPrev';
-      case 'file_glob':
-        return 'Glob: ${args['pattern'] ?? ''}\nKlasor: ${args['path'] ?? '.'}';
-      case 'file_grep':
-        return 'Grep: ${args['pattern'] ?? ''}\nYol: ${args['path'] ?? '.'}\nGlob: ${args['glob'] ?? 'tumu'}';
-      case 'file_delete':
-        return 'Silinecek: ${args['path'] ?? ''}';
-      case 'file_read':
-        return 'Okunacak: ${args['path'] ?? ''}';
-      case 'file_list':
-        return 'Listelenecek: ${args['path'] ?? '.'}';
+        final oldPrev = oldStr.length > 250 ? '${oldStr.substring(0, 250)}...' : oldStr;
+        final newPrev = newStr.length > 250 ? '${newStr.substring(0, 250)}...' : newStr;
+        return '${args['path'] ?? ''}\n--- SIL\n$oldPrev\n+++ EKLE\n$newPrev';
       default:
         return args.toString();
     }
   }
 
+  /// Claude Code tarzi: modal dialog YOK, ekranin altinda onay bar bekler.
   Future<PermissionResponse> _handlePermission(String toolName, Map<String, dynamic> args) async {
     if (!mounted) return PermissionResponse.deny();
-    final mode = PermissionGate.instance.mode;
+    if (PermissionGate.instance.mode == PermissionMode.bypass) return PermissionResponse.allow();
 
-    // Bypass modunda zaten buraya gelmemeli ama gelirse auto-approve
-    if (mode == PermissionMode.bypass) return PermissionResponse.allow();
-
-    final preview = _toolPreview(toolName, args);
-    bool dontAskAgain = false;
-
-    // Ana izin dialogu
-    final action = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: Row(
-            children: [
-              Icon(
-                toolName == 'shell_exec' ? Icons.terminal : Icons.description,
-                size: 20,
-                color: toolName == 'shell_exec' ? Colors.red : Colors.blue,
-              ),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Izin gerekli — $toolName', style: const TextStyle(fontSize: 16))),
-            ],
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E1E1E),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: SelectableText(
-                    preview,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Color(0xFFD4D4D4)),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Bu islem workspace icinde calisacak. Onayliyor musun?',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-                const SizedBox(height: 8),
-                CheckboxListTile(
-                  value: dontAskAgain,
-                  onChanged: (v) => setState(() => dontAskAgain = v ?? false),
-                  title: const Text('Bu oturumda bu tool icin bir daha sorma', style: TextStyle(fontSize: 11)),
-                  controlAffinity: ListTileControlAffinity.leading,
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                ),
-                if (mode == PermissionMode.planAsk)
-                  const Text('Mod: Plan/Ask (en guvenli)', style: TextStyle(fontSize: 10, color: Colors.green)),
-                if (mode == PermissionMode.acceptEdits)
-                  const Text('Mod: Accept Edits (dosya otomatik, shell sorar)', style: TextStyle(fontSize: 10, color: Colors.orange)),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'deny'),
-              child: const Text('Reddet'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'edit'),
-              child: const Text('Duzenle'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, dontAskAgain ? 'allow_session' : 'allow'),
-              child: const Text('Onayla'),
-            ),
-          ],
-        ),
-      ),
+    final completer = Completer<PermissionResponse>();
+    final approval = _PendingApproval(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      toolName: toolName,
+      preview: _toolPreview(toolName, args),
+      completer: completer,
     );
+    setState(() => _pendingApproval = approval);
+    _scrollToBottom();
 
-    if (action == null || action == 'deny') {
-      return PermissionResponse.deny();
-    }
-    if (action == 'allow' || action == 'allow_session') {
-      final allowSession = action == 'allow_session';
-      if (allowSession) PermissionGate.instance.allowForSession(toolName);
-      return PermissionResponse.allow(dontAskAgain: allowSession);
-    }
-    if (action == 'edit') {
-      // Duzenle -> args'i duzenle
-      final edited = await _showEditDialog(toolName, args);
-      if (edited == null) return PermissionResponse.deny(); // edit iptal -> reddet
-      // Duzenlenen args ile onayla
-      if (dontAskAgain) PermissionGate.instance.allowForSession(toolName);
-      return PermissionResponse.allow(editedArgs: edited, dontAskAgain: dontAskAgain);
-    }
-    return PermissionResponse.deny();
+    final response = await completer.future;
+    if (response.dontAskAgain) PermissionGate.instance.allowForSession(toolName);
+    if (mounted) setState(() => _pendingApproval = null);
+    return response;
   }
 
-  Future<Map<String, dynamic>?> _showEditDialog(String toolName, Map<String, dynamic> args) async {
-    if (toolName == 'shell_exec') {
-      final controller = TextEditingController(text: args['command']?.toString() ?? '');
-      final workdirController = TextEditingController(text: args['workdir']?.toString() ?? '.');
-      final result = await showDialog<Map<String, dynamic>>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Komutu duzenle'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: controller, decoration: const InputDecoration(labelText: 'Komut', border: OutlineInputBorder()), maxLines: 3, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-              const SizedBox(height: 8),
-              TextField(controller: workdirController, decoration: const InputDecoration(labelText: 'Workdir', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Iptal')),
-            FilledButton(onPressed: () => Navigator.pop(context, {'command': controller.text, 'workdir': workdirController.text}), child: const Text('Kaydet ve calistir')),
-          ],
-        ),
-      );
-      return result;
-    } else if (toolName == 'file_write') {
-      final pathController = TextEditingController(text: args['path']?.toString() ?? '');
-      final contentController = TextEditingController(text: args['content']?.toString() ?? '');
-      final result = await showDialog<Map<String, dynamic>>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Dosyayi duzenle'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(controller: pathController, decoration: const InputDecoration(labelText: 'Yol', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 200,
-                  child: TextField(controller: contentController, decoration: const InputDecoration(labelText: 'Icerik', border: OutlineInputBorder()), maxLines: null, expands: true, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Iptal')),
-            FilledButton(onPressed: () => Navigator.pop(context, {'path': pathController.text, 'content': contentController.text}), child: const Text('Kaydet ve calistir')),
-          ],
-        ),
-      );
-      return result;
-    } else if (toolName == 'file_delete') {
-      final pathController = TextEditingController(text: args['path']?.toString() ?? '');
-      final result = await showDialog<Map<String, dynamic>>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Silinecek yolu duzenle'),
-          content: TextField(controller: pathController, decoration: const InputDecoration(labelText: 'Yol', border: OutlineInputBorder())),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Iptal')),
-            FilledButton(onPressed: () => Navigator.pop(context, {'path': pathController.text}), child: const Text('Kaydet ve calistir')),
-          ],
-        ),
-      );
-      return result;
-    } else if (toolName == 'file_edit') {
-      final pathController = TextEditingController(text: args['path']?.toString() ?? '');
-      final oldController = TextEditingController(text: args['old_string']?.toString() ?? '');
-      final newController = TextEditingController(text: args['new_string']?.toString() ?? '');
-      final result = await showDialog<Map<String, dynamic>>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Duzenlemeyi duzenle (diff)'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(controller: pathController, decoration: const InputDecoration(labelText: 'Yol', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-                  const SizedBox(height: 8),
-                  TextField(controller: oldController, decoration: const InputDecoration(labelText: 'old_string (unique)', border: OutlineInputBorder()), maxLines: 4, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-                  const SizedBox(height: 8),
-                  TextField(controller: newController, decoration: const InputDecoration(labelText: 'new_string', border: OutlineInputBorder()), maxLines: 4, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Iptal')),
-            FilledButton(onPressed: () => Navigator.pop(context, {'path': pathController.text, 'old_string': oldController.text, 'new_string': newController.text}), child: const Text('Kaydet ve calistir')),
-          ],
-        ),
-      );
-      return result;
-    } else if (toolName == 'file_glob') {
-      final patternController = TextEditingController(text: args['pattern']?.toString() ?? '');
-      final pathController = TextEditingController(text: args['path']?.toString() ?? '.');
-      final result = await showDialog<Map<String, dynamic>>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Glob duzenle'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: patternController, decoration: const InputDecoration(labelText: 'Pattern (or **/*.dart)', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-            const SizedBox(height: 8),
-            TextField(controller: pathController, decoration: const InputDecoration(labelText: 'Path', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Iptal')),
-            FilledButton(onPressed: () => Navigator.pop(context, {'pattern': patternController.text, 'path': pathController.text}), child: const Text('Kaydet ve calistir')),
-          ],
-        ),
-      );
-      return result;
-    } else if (toolName == 'file_grep') {
-      final patternController = TextEditingController(text: args['pattern']?.toString() ?? '');
-      final pathController = TextEditingController(text: args['path']?.toString() ?? '.');
-      final globController = TextEditingController(text: args['glob']?.toString() ?? '');
-      final result = await showDialog<Map<String, dynamic>>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Grep duzenle'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: patternController, decoration: const InputDecoration(labelText: 'Pattern (regex)', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-            const SizedBox(height: 8),
-            TextField(controller: pathController, decoration: const InputDecoration(labelText: 'Path', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-            const SizedBox(height: 8),
-            TextField(controller: globController, decoration: const InputDecoration(labelText: 'Glob (opsiyonel, or *.dart)', border: OutlineInputBorder()), style: const TextStyle(fontSize: 12)),
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Iptal')),
-            FilledButton(onPressed: () => Navigator.pop(context, {'pattern': patternController.text, 'path': pathController.text, 'glob': globController.text}), child: const Text('Kaydet ve calistir')),
-          ],
-        ),
-      );
-      return result;
+  // --- Canli akis parse yardimcilari ---
+
+  void _handleAgentChunk(String chunk) {
+    final trimmed = chunk.trimLeft();
+
+    // Tool baslangici: \n> tool: `name` `args`\n
+    if (trimmed.startsWith('> tool: `')) {
+      final match = RegExp(r'^> tool: `([^`]+)` `([\s\S]*?)`\n?$').firstMatch(trimmed);
+      if (match != null) {
+        setState(() {
+          _activities.add(ToolActivity(
+            id: '${DateTime.now().microsecondsSinceEpoch}_${_activities.length}',
+            toolName: match.group(1)!,
+            argsPreview: match.group(2)!,
+          ));
+          _statusLine = 'calisiyor: ${match.group(1)}';
+        });
+        _scrollToBottom();
+        return;
+      }
     }
-    return null;
+
+    // Tool sonucu: \n< NAME: preview\n
+    if (trimmed.startsWith('< ')) {
+      final body = trimmed.substring(2).trimRight();
+      final colonIdx = body.indexOf(':');
+      final name = colonIdx > 0 ? body.substring(0, colonIdx).trim() : body;
+      var output = colonIdx > 0 ? body.substring(colonIdx + 1).trim() : '';
+      final isError = output.startsWith('[!]') || body.contains('Kullanıcı reddetti');
+      // En son ayni isimli running karti bul ve tamamla
+      for (final a in _activities.reversed) {
+        if (a.toolName == name && a.status == 'running') {
+          setState(() {
+            a.status = isError ? 'error' : 'done';
+            a.output = output.isEmpty ? '(cikti yok)' : output;
+          });
+          break;
+        }
+      }
+      return;
+    }
+
+    // Subagent / sistem satirlari -> ayri bilgi karti gibi ama text olarak kalsin
+    setState(() {
+      _streamingText += chunk;
+    });
+    _scrollToBottom();
   }
 
   Future<void> _attachFile() async {
@@ -469,25 +285,19 @@ class _ChatScreenState extends State<ChatScreen> {
       final picked = result.files.first;
       String? content;
       String displayName = picked.name;
-      // Workspace'e kopyala (genel erisim: nereden isterse)
       if (picked.path != null) {
         final file = File(picked.path!);
         if (await file.exists()) {
           final bytes = await file.readAsBytes();
-          // 2MB uzeri binary ise sadece yol ekle, icerik degil
-          if (bytes.length > 2 * 1024 * 1024) {
-            content = null;
-          } else {
+          if (bytes.length <= 2 * 1024 * 1024) {
             try {
               content = String.fromCharCodes(bytes);
-              // Binary kontrol: cok fazla non-printable
               final nonPrintable = content.codeUnits.where((c) => c < 32 && c != 10 && c != 13 && c != 9).length;
               if (nonPrintable > content.length * 0.3) content = null;
             } catch (_) {
               content = null;
             }
           }
-          // Workspace'e kopyala
           try {
             await WorkspaceFs.instance.writeBytes(displayName, bytes);
           } catch (_) {}
@@ -501,7 +311,6 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       }
       if (!mounted) return;
-      // Mesaj kutusuna ekle
       final prefix = '[Attached: $displayName]';
       if (content != null && content.trim().isNotEmpty) {
         final truncated = content.length > 4000 ? '${content.substring(0, 4000)}\n...[truncated]' : content;
@@ -509,21 +318,87 @@ class _ChatScreenState extends State<ChatScreen> {
         final current = _textController.text;
         _textController.text = current.isEmpty ? insertion : '$current\n\n$insertion';
       } else {
-        final insertion = '$prefix (binary veya bos, workspace\'e kopyalandi: $displayName)';
+        final insertion = '$prefix (workspace\'e kopyalandi)';
         final current = _textController.text;
         _textController.text = current.isEmpty ? insertion : '$current\n\n$insertion';
       }
       _textController.selection = TextSelection.fromPosition(TextPosition(offset: _textController.text.length));
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$displayName eklendi')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dosya ekleme hatasi: $e')));
     }
   }
 
+  bool _handleSlashCommand(String text) {
+    final parts = text.split(RegExp(r'\s+'));
+    final cmd = parts.first.toLowerCase();
+    switch (cmd) {
+      case '/clear':
+        _clearChat();
+        return true;
+      case '/model':
+        _showQuickModelSelector();
+        return true;
+      case '/help':
+        _appendLocalSystemMessage('/clear temizle • /model sec • /plan on|off • /mode planAsk|acceptEdits|bypass • dosya ekle: klips ikonu');
+        return true;
+      case '/plan':
+        if (!_agentMode) {
+          _appendLocalSystemMessage('Once Agent switch acik olmali.');
+          return true;
+        }
+        setState(() {
+          _planMode = parts.length > 1 && parts[1].toLowerCase() == 'on';
+          _planApproved = false;
+        });
+        _appendLocalSystemMessage('Plan Modu: ${_planMode ? "ACIK — once plan, sonra Uygula" : "KAPALI"}');
+        return true;
+      case '/mode':
+        if (parts.length < 2) {
+          _appendLocalSystemMessage('Kullanim: /mode planAsk|acceptEdits|bypass');
+          return true;
+        }
+        final m = parts[1].toLowerCase();
+        final target = m == 'acceptedits' || m == 'accept_edits'
+            ? PermissionMode.acceptEdits
+            : m == 'bypass'
+                ? PermissionMode.bypass
+                : PermissionMode.planAsk;
+        if (target == PermissionMode.bypass) {
+          _showError('Bypass modu Ayarlar\'dan onay ile acilir.');
+          return true;
+        }
+        PermissionGate.instance.setMode(target);
+        setState(() {});
+        _appendLocalSystemMessage('Izin modu: ${target.displayName}');
+        return true;
+    }
+    return false;
+  }
+
+  void _appendLocalSystemMessage(String text) {
+    setState(() {
+      _messages.add(ChatMessage(
+        id: '${DateTime.now().microsecondsSinceEpoch}_sys',
+        role: 'assistant',
+        content: text,
+        timestamp: DateTime.now(),
+        presetId: 'local',
+        sessionId: _sessionId,
+      ));
+    });
+  }
+
   Future<void> _sendMessage() async {
     final text = _textController.text.trim();
     if (text.isEmpty || _sending) return;
+
+    // Slash komutlari — LLM'e gitmez
+    if (text.startsWith('/')) {
+      _textController.clear();
+      _handleSlashCommand(text);
+      return;
+    }
 
     final presetId = _settingsRepo.getPresetId();
     final preset = presetId != null ? _chatRepository.resolvePreset(presetId) : null;
@@ -559,6 +434,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _messages.add(userMessage);
       _sending = true;
       _streamingText = '';
+      _activities.clear();
+      _statusLine = 'dusunuyor...';
       _textController.clear();
     });
     await _chatRepository.addMessage(userMessage);
@@ -566,17 +443,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final rawHistory = _messages.map((m) => {'role': m.role, 'content': m.content}).toList();
     final history = ContextCompactor.instance.compactForSession(rawHistory);
-    if (history.length != rawHistory.length && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Context compacted: ${rawHistory.length} -> ${history.length} mesaj'), duration: const Duration(seconds: 2)),
-      );
-    }
     final baseUrl = _settingsRepo.getBaseUrl();
     final useAgent = _agentMode && ToolDefinitions.presetSupportsTools(preset.id);
 
     try {
       if (useAgent) {
-        final buffer = StringBuffer();
+        final textBuffer = StringBuffer(); // sadece temiz metin (tool trace'siz)
         await for (final chunk in AgentLoop.instance.runTextStream(
           preset: preset,
           apiKey: apiKey,
@@ -589,12 +461,19 @@ class _ChatScreenState extends State<ChatScreen> {
           planMode: _planMode,
           planApproved: _planApproved,
         )) {
-          buffer.write(chunk);
+          _handleAgentChunk(chunk);
+          // Tool trace satirlarini metinden ayikla
+          if (!chunk.trimLeft().startsWith('> tool: `') &&
+              !chunk.trimLeft().startsWith('< ') &&
+              !chunk.startsWith('[subagent') &&
+              !chunk.startsWith('\n[subagent') &&
+              !chunk.contains('Kullanici reddetti — ajan alternatif')) {
+            textBuffer.write(chunk);
+          }
           if (!mounted) return;
-          setState(() => _streamingText = buffer.toString());
-          _scrollToBottom();
+          setState(() {});
         }
-        await _appendAssistantMessage(preset.id, buffer.toString());
+        await _appendAssistantMessage(preset.id, textBuffer.toString());
       } else if (preset.streamStrategy == StreamStrategy.none) {
         final result = await _httpClient.sendSingle(
           preset: preset,
@@ -630,7 +509,10 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) {
         setState(() {
           _sending = false;
-          _streamingText = '';
+          _statusLine = '';
+          for (final a in _activities) {
+            if (a.status == 'running') a.status = 'done';
+          }
         });
       }
     }
@@ -652,6 +534,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _messages.add(assistantMessage);
     }
     await _chatRepository.addMessage(assistantMessage);
+    setState(() => _streamingText = '');
     _scrollToBottom();
   }
 
@@ -663,18 +546,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _clearChat() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Sohbet temizlensin mi?'),
-        content: const Text('Bu oturumdaki tum mesajlar silinecek.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Iptal')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Temizle')),
-        ],
-      ),
-    );
-    if (confirm != true) return;
     for (final m in List<ChatMessage>.from(_messages)) {
       await _chatRepository.deleteMessage(m.id);
     }
@@ -683,6 +554,8 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _messages.clear();
       _todos.clear();
+      _activities.clear();
+      _streamingText = '';
     });
   }
 
@@ -719,195 +592,135 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ],
             ),
-          if (supportsAgent && _agentMode)
-            Row(
-              children: [
-                const Text('Plan', style: TextStyle(fontSize: 11)),
-                Switch(
-                  value: _planMode,
-                  onChanged: (v) => setState(() {
-                    _planMode = v;
-                    _planApproved = false;
-                  }),
-                ),
-              ],
-            ),
-          IconButton(icon: const Icon(Icons.delete_outline), onPressed: _messages.isEmpty ? null : _clearChat, tooltip: 'Temizle'),
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Ayarlar',
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) {
+              if (v == 'clear') _clearChat();
+              if (v == 'settings') Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
+              if (v == 'help') _handleSlashCommand('/help');
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'help', child: Text('Komutlar (/help)')),
+              const PopupMenuItem(value: 'clear', child: Text('Sohbeti temizle')),
+              const PopupMenuItem(value: 'settings', child: Text('Ayarlar')),
+            ],
           ),
         ],
       ),
       body: Column(
         children: [
+          // Durum seridi
           if (supportsAgent && _agentMode)
             Container(
               width: double.infinity,
               color: permMode == PermissionMode.bypass
                   ? Colors.red.withValues(alpha: 0.12)
-                  : Colors.green.withValues(alpha: 0.1),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  : Colors.green.withValues(alpha: 0.08),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
               child: Row(
                 children: [
                   Icon(
                     permMode == PermissionMode.bypass ? Icons.warning : Icons.smart_toy,
-                    size: 14,
+                    size: 13,
                     color: permMode == PermissionMode.bypass ? Colors.red : Colors.green,
                   ),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
                       permMode == PermissionMode.bypass
-                          ? 'Agent BYPASS — hic sormadan calisir (riskli)'
+                          ? 'BYPASS — hic sormaz (riskli)'
                           : permMode == PermissionMode.acceptEdits
-                              ? 'Agent Accept Edits — dosya otomatik, shell sorar'
-                              : 'Agent Plan/Ask — her shell/yazma/silme sorar (onerilen)',
-                      style: TextStyle(fontSize: 11, color: permMode == PermissionMode.bypass ? Colors.red : Colors.green),
+                              ? 'Accept Edits — shell sorar'
+                              : 'Plan/Ask — riskli islem sorar',
+                      style: TextStyle(fontSize: 10, color: permMode == PermissionMode.bypass ? Colors.red : Colors.green),
                     ),
                   ),
-                ],
-              ),
-            ),
-          if (supportsAgent && !_agentMode)
-            Container(
-              width: double.infinity,
-              color: Colors.orange.withValues(alpha: 0.1),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: const Text('Agent kapali — sadece chat', style: TextStyle(fontSize: 11, color: Colors.orange)),
-            ),
-          if (supportsAgent && _agentMode && _planMode)
-            Container(
-              width: double.infinity,
-              color: _planApproved ? Colors.green.withValues(alpha: 0.1) : Colors.purple.withValues(alpha: 0.1),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Row(
-                children: [
-                  Icon(_planApproved ? Icons.check_circle : Icons.assignment, size: 14, color: _planApproved ? Colors.green : Colors.purple),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _planApproved ? 'Plan onaylandi — uygulama serbest' : 'Plan Modu: once plan yazilacak, onay bekleniyor',
-                      style: TextStyle(fontSize: 11, color: _planApproved ? Colors.green : Colors.purple),
-                    ),
-                  ),
-                  if (!_planApproved && _todos.isNotEmpty)
-                    FilledButton.tonal(
-                      onPressed: () => setState(() => _planApproved = true),
-                      style: FilledButton.styleFrom(minimumSize: Size.zero, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                      child: const Text('Uygula', style: TextStyle(fontSize: 11)),
-                    ),
-                ],
-              ),
-            ),
-          if (_todos.isNotEmpty)
-            Container(
-              width: double.infinity,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.checklist, size: 14),
-                      const SizedBox(width: 6),
-                      Text('Plan (${_todos.where((t) => t['status'] == 'completed').length}/${_todos.length})', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                      const Spacer(),
-                      TextButton(
-                        onPressed: () => setState(() => _todos.clear()),
-                        style: TextButton.styleFrom(minimumSize: Size.zero, padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2)),
-                        child: const Text('Temizle', style: TextStyle(fontSize: 10)),
+                  if (_planMode)
+                    GestureDetector(
+                      onTap: () {
+                        if (_todos.isNotEmpty && !_planApproved) {
+                          setState(() => _planApproved = true);
+                        } else {
+                          setState(() => _planApproved = false);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(color: (_planApproved ? Colors.green : Colors.purple).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(10)),
+                        child: Text(_planApproved ? 'PLAN ONAYLI' : 'PLAN MODU', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: _planApproved ? Colors.green : Colors.purple)),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  ..._todos.map((todo) {
-                    final status = todo['status']?.toString() ?? 'pending';
-                    IconData icon;
-                    Color color;
-                    switch (status) {
-                      case 'in_progress':
-                        icon = Icons.hourglass_top;
-                        color = Colors.blue;
-                        break;
-                      case 'completed':
-                        icon = Icons.check_circle;
-                        color = Colors.green;
-                        break;
-                      case 'cancelled':
-                        icon = Icons.cancel;
-                        color = Colors.red;
-                        break;
-                      default:
-                        icon = Icons.radio_button_unchecked;
-                        color = Colors.grey;
-                    }
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Row(
-                        children: [
-                          Icon(icon, size: 12, color: color),
-                          const SizedBox(width: 6),
-                          Expanded(child: Text(todo['content']?.toString() ?? '', style: TextStyle(fontSize: 11, color: color, decoration: status == 'completed' ? TextDecoration.lineThrough : null))),
-                          if (todo['priority'] == 'high') const Icon(Icons.flag, size: 10, color: Colors.red),
-                        ],
-                      ),
-                    );
-                  }),
+                    ),
                 ],
               ),
             ),
+          // Todo checklist
+          if (_todos.isNotEmpty) _buildTodoPanel(),
+          // Mesajlar + canli tool kartlari
           Expanded(
-            child: _messages.isEmpty && _streamingText.isEmpty
+            child: _messages.isEmpty && _activities.isEmpty && _streamingText.isEmpty
                 ? Center(
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.chat_bubble_outline, size: 48, color: Colors.grey),
+                          Icon(Icons.terminal, size: 44, color: Colors.grey.withValues(alpha: 0.6)),
                           const SizedBox(height: 12),
-                          const Text('Henuz mesaj yok', style: TextStyle(color: Colors.grey)),
+                          Text('Ajana bir gorev ver', style: TextStyle(color: Colors.grey.withValues(alpha: 0.9))),
                           const SizedBox(height: 8),
-                          Text(
-                            supportsAgent && _agentMode
-                                ? 'Ornek: "workspace\'te main.dart olustur ve hello world yaz"'
-                                : 'Bir mesaj yazarak baslayin',
-                            style: TextStyle(fontSize: 12, color: Colors.grey.withValues(alpha: 0.9)),
-                            textAlign: TextAlign.center,
-                          ),
+                          Text('"todo app yap, calistir, test et"\n\n/komutlar icin /help', style: TextStyle(fontSize: 12, color: Colors.grey.withValues(alpha: 0.7)), textAlign: TextAlign.center),
                         ],
                       ),
                     ),
                   )
                 : ListView.builder(
                     controller: _scrollController,
-                    padding: const EdgeInsets.all(12),
-                    itemCount: _messages.length + (_streamingText.isNotEmpty ? 1 : 0),
+                    padding: const EdgeInsets.all(10),
+                    itemCount: _messages.length + _activities.length + ((_streamingText.isNotEmpty) ? 1 : 0),
                     itemBuilder: (context, index) {
-                      if (index == _messages.length) {
-                        return _MessageBubble(role: 'assistant', content: _streamingText);
+                      // Once gecmis mesajlar
+                      if (index < _messages.length) {
+                        final message = _messages[index];
+                        return _MessageBubble(role: message.role, content: message.content);
                       }
-                      final message = _messages[index];
-                      return _MessageBubble(role: message.role, content: message.content);
+                      final liveIndex = index - _messages.length;
+                      // Canli tool kartlari
+                      if (liveIndex < _activities.length) {
+                        return ToolActivityCard(activity: _activities[liveIndex]);
+                      }
+                      // Streaming metin
+                      return _MessageBubble(role: 'assistant', content: _streamingText);
                     },
                   ),
           ),
-          if (_sending && _streamingText.isEmpty)
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
-              child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+          // Status line
+          if (_sending)
+            Padding(
+              padding: const EdgeInsets.only(left: 14, bottom: 4),
+              child: Row(
+                children: [
+                  const SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 2)),
+                  const SizedBox(width: 8),
+                  Text(_statusLine.isEmpty ? 'calisiyor...' : _statusLine, style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                ],
+              ),
+            ),
+          // Alt onay bar — Claude Code tarzi
+          if (_pendingApproval != null)
+            PermissionPromptBar(
+              key: ValueKey(_pendingApproval!.id),
+              toolName: _pendingApproval!.toolName,
+              preview: _pendingApproval!.preview,
+              onRespond: (r) => _pendingApproval!.completer.complete(r),
             ),
           SafeArea(
             child: Padding(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
               child: Row(
                 children: [
                   IconButton(
                     icon: const Icon(Icons.attach_file),
-                    tooltip: 'Dosya ekle (genel erisim)',
+                    tooltip: 'Dosya ekle',
                     onPressed: _sending ? null : _attachFile,
                   ),
                   const SizedBox(width: 4),
@@ -917,10 +730,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       minLines: 1,
                       maxLines: 5,
                       enabled: !_sending,
-                      decoration: const InputDecoration(
-                        hintText: 'Mesajinizi yazin...',
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: InputDecoration(
+                        hintText: _sending ? 'ajan calisiyor...' : 'Gorev yaz (/help)',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(24)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                       ),
                       onSubmitted: (_) => _sendMessage(),
                     ),
@@ -938,6 +751,80 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
+
+  Widget _buildTodoPanel() {
+    return Container(
+      width: double.infinity,
+      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.checklist, size: 13),
+              const SizedBox(width: 6),
+              Text('Plan (${_todos.where((t) => t['status'] == 'completed').length}/${_todos.length})', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              GestureDetector(
+                onTap: () => setState(() => _todos.clear()),
+                child: Text('temizle', style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Wrap(
+            spacing: 10,
+            runSpacing: 3,
+            children: _todos.map((todo) {
+              final status = todo['status']?.toString() ?? 'pending';
+              IconData icon;
+              Color color;
+              switch (status) {
+                case 'in_progress':
+                  icon = Icons.hourglass_top;
+                  color = Colors.blue;
+                  break;
+                case 'completed':
+                  icon = Icons.check_circle;
+                  color = Colors.green;
+                  break;
+                case 'cancelled':
+                  icon = Icons.cancel;
+                  color = Colors.red;
+                  break;
+                default:
+                  icon = Icons.radio_button_unchecked;
+                  color = Colors.grey;
+              }
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 11, color: color),
+                  const SizedBox(width: 4),
+                  Text(todo['content']?.toString() ?? '', style: TextStyle(fontSize: 10.5, color: color, decoration: status == 'completed' ? TextDecoration.lineThrough : null)),
+                ],
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PendingApproval {
+  _PendingApproval({
+    required this.id,
+    required this.toolName,
+    required this.preview,
+    required this.completer,
+  });
+
+  final String id;
+  final String toolName;
+  final String preview;
+  final Completer<PermissionResponse> completer;
 }
 
 class _MessageBubble extends StatelessWidget {
@@ -953,26 +840,22 @@ class _MessageBubble extends StatelessWidget {
     final bubbleColor = isUser ? theme.colorScheme.primary : theme.colorScheme.surfaceContainerHighest;
     final textColor = isUser ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface;
 
-    final isToolTrace = content.contains('tool:') || content.contains('shell_exec') || content.contains('file_');
-
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
+        margin: const EdgeInsets.symmetric(vertical: 3),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
         decoration: BoxDecoration(
-          color: isToolTrace && !isUser ? const Color(0xFF1E1E1E) : bubbleColor,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: SelectableText(
-          content,
-          style: TextStyle(
-            color: isToolTrace && !isUser ? const Color(0xFF4EC9B0) : textColor,
-            fontFamily: isToolTrace && !isUser ? 'monospace' : null,
-            fontSize: 14,
+          color: bubbleColor,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isUser ? 16 : 4),
+            bottomRight: Radius.circular(isUser ? 4 : 16),
           ),
         ),
+        child: SelectableText(content, style: TextStyle(color: textColor, fontSize: 14, height: 1.35)),
       ),
     );
   }

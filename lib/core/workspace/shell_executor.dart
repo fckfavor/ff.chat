@@ -106,7 +106,7 @@ class ShellExecutor {
         shell,
         args,
         workingDirectory: spawnWorkDir,
-        environment: _buildEnv(env, workspaceRoot),
+        environment: useProot ? _buildProotEnv(env, workspaceRoot) : _buildEnv(env, workspaceRoot),
         runInShell: false,
       );
 
@@ -223,7 +223,7 @@ class ShellExecutor {
       shell,
       args,
       workingDirectory: spawnWorkDir,
-      environment: _buildEnv(null, workspaceRoot),
+      environment: useProot ? _buildProotEnv(null, workspaceRoot) : _buildEnv(null, workspaceRoot),
       runInShell: false,
     );
 
@@ -289,6 +289,18 @@ class ShellExecutor {
     };
     if (extra != null) env.addAll(extra);
     // API key gibi hassas seyleri env'e koyma — DynamicHttpClient zaten ayri yonetiyor
+    return env;
+  }
+
+  /// Proot icinde rootfs PATH kullan (busybox /usr/bin:/bin)
+  Map<String, String> _buildProotEnv(Map<String, String>? extra, String workspaceRoot) {
+    final env = <String, String>{
+      'TERM': 'xterm-256color',
+      'HOME': '/root',
+      'LANG': 'C.UTF-8',
+      'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    };
+    if (extra != null) env.addAll(extra);
     return env;
   }
 
