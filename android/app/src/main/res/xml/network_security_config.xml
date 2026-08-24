@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android'in network_security_config'i domain bazlı çalışır ve CIDR/IP
+  aralığı (10.0.0.0/8, 192.168.0.0/16 vb.) tanımlamayı desteklemez; bu
+  yüzden yerel ağdaki AI sunucularına (Ollama, LM Studio vb.) rastgele LAN
+  IP'leri üzerinden http (cleartext) bağlantı kurabilmek için OS seviyesinde
+  cleartext trafiğe izin verilir.
+  Gerçek kısıtlama uygulama katmanında yapılır:
+  DynamicHttpClient._assertSafeScheme, http:// isteklerini yalnızca
+  localhost/127.0.0.1 ve özel (private) IP aralıklarıyla (10.x, 192.168.x,
+  172.16-31.x) sınırlar; başka herhangi bir http:// hedefe istek atılmaya
+  çalışılırsa reddedilir.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

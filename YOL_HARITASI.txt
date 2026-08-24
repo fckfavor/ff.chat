@@ -1,0 +1,201 @@
+PROJE YOL HARİTASI: Evrensel BYOK Mobil AI İstemcisi
+======================================================
+
+Proje Adı: ff.chat (Evrensel BYOK - Bring Your Own Key - Mobil AI İstemcisi)
+Teknoloji: Flutter (Dart) - cross-platform (.apk / .ipa)
+Hedef: Kullanıcıların kendi API anahtarı ve Base URL'i ile herhangi bir LLM
+servisine (OpenAI, Anthropic, DeepSeek, Gemini, Ollama, LM Studio, vb.)
+bağlanabildiği, backend'siz, açık kaynaklı mobil istemci.
+
+--------------------------------------------------
+1. TEKNİK MİMARİ VE BİLEŞENLER
+--------------------------------------------------
+
+A. Sunum Katmanı (UI / UX)
+- Minimalist, hızlı sohbet arayüzü.
+- API / Base URL / model parametreleri konfigürasyon ekranı.
+- Hata mesajlarının kullanıcı dostu gösterimi (bkz. madde 7).
+- Preset (şablon) yönetim ekranı: oluştur / düzenle / içe-dışa aktar.
+
+B. Dinamik İstek Motoru (Dynamic Request Engine)
+- İstek Gövdesi Şablonlama (Request Body Mapping):
+  {
+    "model": "{{MODEL_NAME}}",
+    "messages": {{CONVERSATION_HISTORY}},
+    "temperature": {{TEMPERATURE}}
+  }
+- Dinamik Header Şablonlama (YENİ - kritik eksikti):
+  Farklı sağlayıcılar farklı auth şeması kullanır:
+    - OpenAI/DeepSeek/Ollama: Authorization: Bearer {{API_KEY}}
+    - Anthropic: x-api-key: {{API_KEY}}  +  anthropic-version: 2023-06-01
+    - Gemini: API key query param olarak (?key={{API_KEY}}), header değil
+  Bu yüzden şablon motoru sadece body değil, header VE URL query param
+  şablonlamasını da desteklemeli. Preset yapısı şöyle olmalı:
+    {
+      "headers": { "x-api-key": "{{API_KEY}}", "anthropic-version": "2023-06-01" },
+      "urlQueryParams": { "key": "{{API_KEY}}" },   // Gemini gibi durumlar için
+      "body": { ... }
+    }
+- Sistem Prompt Farklılığı (YENİ):
+  - OpenAI tarzı: system mesajı messages[] içinde role:"system".
+  - Anthropic: system ayrı bir üst-seviye alan (system: "...").
+  Şablonda {{SYSTEM_PROMPT}} ve {{SYSTEM_AS_MESSAGE}} gibi iki farklı
+  placeholder desteklenmeli; preset hangisini kullanacağını seçer.
+- Zorunlu/opsiyonel parametre farkları (YENİ):
+  - Anthropic'te max_tokens zorunlu, OpenAI'de opsiyonel.
+  - Preset başına "zorunlu alanlar" listesi tutulup gönderim öncesi
+    validasyon yapılmalı (eksikse kullanıcıya net hata).
+- Çıktı Çözümleme (Response JSONPath Parsing):
+  choices[0].message.content, content[0].text, response.text vb.
+- Stream İşleyici (GÜNCELLENDİ - tek tip yetmez):
+  Sağlayıcılar arasında stream formatı ciddi farklılık gösterir:
+    - OpenAI: "data: {json}\n\n" ... sonunda "data: [DONE]"
+    - Anthropic: "event: content_block_delta\ndata: {json}\n\n" (event adları önemli)
+    - Gemini: SSE olmayabilir, chunked JSON array dönebilir
+    - Ollama: newline-delimited JSON (NDJSON), SSE değil
+  Çözüm: Tek bir "prefix temizleyici" yerine seçilebilir "Stream Strateji"
+  preset'leri (SSE-OpenAI, SSE-Anthropic-Event, NDJSON, Raw-JSON-Array).
+  Her strateji kendi chunk-ayırma + JSONPath kombinasyonuna sahip olmalı.
+
+C. Güvenli Yerel Depolama (Secure Local Storage)
+- API anahtarları: Android Keystore (EncryptedSharedPreferences) / iOS Keychain.
+- Anahtarların loglara, crash report'lara (Sentry/Firebase Crashlytics vb.)
+  veya debug print'lere asla düz metin sızmaması (YENİ - güvenlik notu).
+- Base URL keyfi olduğundan (SSRF benzeri risk düşük çünkü backend yok,
+  istek doğrudan cihazdan gidiyor) yine de kullanıcı uyarısı: "yerel ağ
+  IP'si girersen (127.0.0.1) çalışmaz, LAN IP kullan" (YENİ).
+
+D. Yerel Veritabanı (Local DB)
+- Sohbet geçmişi, prompt şablonları, ayarlar (SQLite / Hive / Isar).
+
+--------------------------------------------------
+2. YENİ EKLENEN KRİTİK BAŞLIKLAR
+--------------------------------------------------
+
+5. Ağ / Bağlantı Kısıtlamaları (YENİ)
+   - Ollama/LM Studio gibi yerel sunucular için: telefon ve bilgisayar
+     aynı Wi-Fi ağında olmalı, localhost yerine bilgisayarın LAN IP'si
+     girilmeli (örn. 192.168.1.X:11434). UI'da bunu açıklayan bir ipucu/
+     yardım metni olsun.
+   - Android 9+ varsayılan olarak "cleartext traffic" (http://) engeller;
+     Ollama gibi https olmayan yerel sunuculara bağlanmak için
+     network_security_config.xml ayarı gerekecek.
+
+6. Hata Yönetimi ve Kullanıcı Geri Bildirimi (YENİ)
+   - 401 (geçersiz key), 429 (rate limit/quota), 5xx (sunucu hatası),
+     timeout gibi durumlar ham JSON yerine anlaşılır Türkçe/İngilizce
+     mesajlarla gösterilmeli.
+   - Sağlayıcıya özgü hata gövdesi formatları da farklıdır (OpenAI:
+     error.message, Anthropic: error.message farklı yapıda) — bunlar
+     için de bir "hata JSONPath" alanı preset'e eklenebilir.
+
+7. Preset / Şablon Paylaşımı (YENİ - netleştirildi)
+   - Kullanıcılar hazır şablonları JSON dosyası olarak dışa/içe aktarabilir.
+   - İleride: bir GitHub repo/gist üzerinden "community presets" listesi
+     çekilebilir (opsiyonel, v2 hedefi — ilk sürümde gerekli değil).
+
+8. Monetizasyon Altyapısı - Rebuild'siz Genişleme (YENİ)
+   - Karar: BYOK modeli korunacak (kullanıcı kendi key'ini girer, sıfır
+     token maliyeti). Gelir reklam veya abonelikten gelecek, kendi API'lerimiz
+     üzerinden LLM erişimi SATILMAYACAK (reseller/maliyet riskinden kaçınmak için).
+   - MVP'de her şey ücretsiz/reklamsız çıkacak, ama koda en baştan şu
+     soyutlamalar eklenecek ki sonradan "rebuild" gerekmesin:
+       a) FeatureGate katmanı: her özellik `FeatureGate.check('feature_key')`
+          üzerinden kontrol edilecek (başta hep true dönecek).
+       b) AdService soyutlaması: reklam gösterimi ayrı bir servis katmanında,
+          UI koduna gömülü olmayacak (sonradan açıp kapatmak 1 satır olsun).
+       c) IAP (In-App Purchase) için yer ayrılacak: `in_app_purchase` Flutter
+          paketiyle store bazlı abonelik/receipt doğrulama kullanılacak,
+          kendi ödeme backend'i kurulmayacak.
+       d) Var olan kullanıcı verisi (preset, geçmiş) ileride premium/free
+          ayrımı yapılırken migrasyon gerektirmeyecek şekilde tasarlanacak
+          (örn. preset sayısına DB seviyesinde sert limit koyulmayacak,
+          sadece UI seviyesinde soft-limit + upgrade CTA).
+   - Gelir modeli kararı (reklam vs abonelik vs ikisi) kullanıcı tabanı
+     büyüdükçe verilecek; altyapı hazır olduğu için karar gecikmesi
+     geliştirmeyi bloklamayacak.
+
+9. Zorunlu Güncelleme (Force Update) Mekanizması (YENİ)
+   - Firebase Remote Config üzerinden iki seviyeli versiyon kontrolü:
+       a) `minimum_supported_version`: Uygulama bu değerin altındaysa
+          kapatılamayan "Güncelle" ekranı gösterilir, kullanıcı Play Store /
+          GitHub Releases linkine yönlendirilir, uygulama kullanılamaz
+          (kritik güvenlik açığı veya API/preset formatı kırılması gibi
+          durumlar için).
+       b) `latest_version`: Kullanıcı güncel değilse ama zorunlu değilse,
+          kapatılabilir "yeni sürüm mevcut" banner'ı gösterilir (soft update).
+   - Açılışta cihaz versiyonu bu iki değerle karşılaştırılır; sunucu tarafı
+     kurulumu gerekmez, tamamen Remote Config panelinden yönetilir.
+   - Bu mekanizma da FeatureGate/AdService gibi ayrı bir `UpdateCheckService`
+     katmanında tutulacak ki ileride davranışı değiştirmek kolay olsun.
+
+--------------------------------------------------
+3. ÖNCELİK SIRASI (MVP → İleri Seviye)
+--------------------------------------------------
+
+MVP (v1):
+  1. Sabit OpenAI-uyumlu preset (çoğu servis zaten bunu destekliyor:
+     OpenAI, DeepSeek, Ollama /v1/chat/completions, LM Studio).
+  2. Basit sohbet UI + API key/Base URL ayarları.
+  3. Güvenli local storage (Keystore/Keychain).
+  4. SSE (OpenAI formatı) stream desteği.
+  5. Sohbet geçmişi (yerel DB).
+
+v2:
+  6. Anthropic preset'i (farklı header + system alanı + event-based stream).
+  7. Gemini preset'i (query param auth + farklı response yapısı).
+  8. Dinamik header/URL query şablonlama motoru (madde B'deki genel çözüm).
+  9. Hata mesajı normalizasyonu (madde 6).
+
+v3:
+  10. Kullanıcı tanımlı özel preset editörü (tam esneklik).
+  11. Preset içe/dışa aktarma (JSON dosyası).
+  12. Community preset paylaşımı (opsiyonel).
+
+--------------------------------------------------
+4. CLAUDE'A SORULACAK GÜNCELLENMİŞ BAŞLANGIÇ İSTEMİ (PROMPT)
+--------------------------------------------------
+
+"""
+Merhaba Claude,
+
+Kullanıcıların kendi API anahtarlarını ve özel URL'lerini (Base URL) girerek
+çalıştırabileceği, açık kaynaklı ve backend'siz bir mobil yapay zeka istemcisi
+(BYOK - Bring Your Own Key) geliştirmek istiyorum. Bilgisayardaki OpenWebUI
+veya NextChat özgürlüğünü doğrudan bir mobil uygulama (.apk / .ipa) olarak
+sunmayı hedefliyorum. Uygulama sadece OpenAI standardını değil, Anthropic,
+Gemini, DeepSeek, yerel Ollama/LM Studio gibi tüm servisleri dinamik olarak
+destekleyecek.
+
+Mimari şu şekilde:
+1. "Dinamik İstek Şablonları" (JSON Payload Mapping): kullanıcı body'yi
+   `{ "model": "{{MODEL}}", "messages": {{HISTORY}} }` şeklinde tanımlar.
+2. Dinamik Header/Auth şablonlama: bazı servisler Authorization: Bearer
+   kullanırken (OpenAI/DeepSeek), Anthropic x-api-key header'ı, Gemini ise
+   query param (?key=) kullanıyor. Preset yapısı header ve URL query
+   şablonlarını da içermeli.
+3. Sistem prompt farkları: OpenAI'de system mesajı messages[] içinde,
+   Anthropic'te ayrı üst-seviye "system" alanında. Şablon motoru ikisini
+   de desteklemeli.
+4. "JSONPath Çözümleyici": gelen yanıttan metni ayıklamak için
+   choices[0].message.content veya content[0].text gibi yollar.
+5. Stream (SSE/NDJSON) için birden fazla strateji: OpenAI tipi
+   "data: {json}" + [DONE], Anthropic tipi event-based SSE, Ollama tipi
+   newline-delimited JSON. Kullanıcı hangi stratejinin kullanılacağını
+   preset üzerinden seçebilmeli.
+6. Hata gövdesi de JSONPath ile ayrıştırılıp kullanıcıya anlaşılır
+   gösterilmeli (401/429/5xx ayrımı dahil).
+7. API anahtarları tamamen yerelde şifreli saklanacak (Android Keystore /
+   iOS Keychain), loglara asla yazılmayacak.
+
+Bu projeyi Flutter (Dart) ile geliştiriyorum. Senden ricam, bu esnek yapıyı
+sırtlayacak **'Dinamik İstek Motoru' (Dynamic Request Engine)** bileşenini
+mimari olarak tasarlaman:
+- Body + header + URL query şablonlama (tek bir Preset modeli üzerinden),
+- Farklı stream stratejilerini (SSE-OpenAI, SSE-Anthropic, NDJSON) yöneten
+  bir arayüz/strateji deseni,
+- JSONPath ile hem başarılı yanıtı hem hata yanıtını parse eden yapı.
+
+Dart sınıf yapısını (architecture) ve örnek kod bloklarını (Http client &
+Stream handler) benim için oluşturur musun?
+"""
